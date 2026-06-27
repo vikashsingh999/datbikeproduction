@@ -369,7 +369,6 @@ const orderDetailsGrid = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap:
 const orderDetailItem = { display: 'flex', flexDirection: 'column', gap: '4px' };
 const orderDetailLabel = { fontSize: '11px', fontWeight: '600', color: '#6a6d70', textTransform: 'uppercase' };
 const orderDetailValue = { fontSize: '14px', fontWeight: '500', color: '#32363a' };
-const detailInputStyle = { padding: '6px 8px', borderRadius: '4px', border: '1px solid #89919a', fontSize: '14px', color: '#32363a', backgroundColor: '#fff' };
 const textareaStyle = { padding: '8px 10px', borderRadius: '4px', border: '1px solid #89919a', fontSize: '14px', color: '#32363a', backgroundColor: '#fff', resize: 'vertical', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' };
 
 export default DatBikeLogTab;
