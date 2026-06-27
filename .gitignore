@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+serviceAccount*.json
+firebase-service-account*.json
+
+# Build output
+frontend/build/
+build/
+
+# Logs
+*.log
+backend/backend.log
+frontend/frontend.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json

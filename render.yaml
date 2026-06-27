@@ -1,0 +1,19 @@
+# Render Blueprint for the Dat.Bike backend (Express API).
+# In Render: New > Blueprint > connect this repo. Secrets are set in the dashboard.
+services:
+  - type: web
+    name: datbike-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: SAP_BASE_URL
+        sync: false
+      - key: SAP_USER
+        sync: false
+      - key: SAP_PASS
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
