@@ -70,10 +70,18 @@ async function countGoodsReceipts(orderId) {
     const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
         + `?$filter=ManufacturingOrder eq '${orderId}' and GoodsMovementType eq '101'`
         + `&$select=QuantityInEntryUnit,IsReversed,IsReversal&$format=json`;
-    const response = await axios.get(url, {
-        auth: sapAuth,
-        headers: { 'Accept': 'application/json' },
-    });
+    let response;
+    try {
+        response = await axios.get(url, {
+            auth: sapAuth,
+            headers: { 'Accept': 'application/json' },
+        });
+    } catch (error) {
+        // SAP returns 404 when no material documents match the filter — that just
+        // means nothing has been received yet, not a real error.
+        if (error.response?.status === 404) return 0;
+        throw error;
+    }
     const items = response.data?.d?.results || [];
     // Ignore reversed/reversal items so cancelled receipts don't count.
     return items.reduce((sum, item) => {
@@ -159,10 +167,7 @@ app.post('/api/orders/confirmation-details', async (req, res) => {
         });
 
         const results = response.data?.d?.results || [];
-        if (results.length === 0) {
-            return res.status(404).json({ error: `No confirmations found for order ${orderId}.` });
-        }
-
+        // No confirmations yet is a normal state, not an error — return an empty list.
         const confirmations = results.map(conf => ({
             confirmationGroup: conf.ConfirmationGroup || '',
             operation: conf.OrderOperation || '',
@@ -174,6 +179,11 @@ app.post('/api/orders/confirmation-details', async (req, res) => {
 
         return res.status(200).json({ success: true, confirmations });
     } catch (error) {
+        // SAP returns 404 when the filter matches no confirmations — that just
+        // means none have been posted yet, so return an empty list rather than error.
+        if (error.response?.status === 404) {
+            return res.status(200).json({ success: true, confirmations: [] });
+        }
         console.error('Error fetching confirmation details:', error.message);
         return res.status(500).json({ error: error.message, details: error.response?.data });
     }
