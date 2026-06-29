@@ -131,10 +131,6 @@ app.post('/api/orders/details', async (req, res) => {
             return res.status(404).json({ error: `Order ${orderId} not found in SAP. Check the order number.` });
         }
 
-        // How many units have already been received via goods receipt, so the UI
-        // can show progress and block over-receipt.
-        const receivedQuantity = await countGoodsReceipts(orderId);
-
         return res.status(200).json({
             success: true,
             orderDetails: {
@@ -143,7 +139,6 @@ app.post('/api/orders/details', async (req, res) => {
                 quantity: header.MfgOrderPlannedTotalQty || op.OpPlannedTotalQuantity || '',
                 storageLocation: header.StorageLocation || '',
                 workCenter: op.WorkCenter || '',
-                receivedQuantity,
             },
         });
     } catch (error) {
