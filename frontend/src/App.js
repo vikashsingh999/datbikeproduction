@@ -22,7 +22,7 @@ function App() {
     return (
       <div style={pageBgStyle}>
         <DatBikeHeader />
-        <div style={loadingStyle}>Loading...</div>
+        <div style={loadingStyle}>Loading... / Đang tải...</div>
       </div>
     );
   }
@@ -37,12 +37,12 @@ function App() {
         right={
           <>
             <span style={userEmailStyle}>{user.email}</span>
-            <button type="button" onClick={() => signOut(auth)} style={logoutBtnStyle}>Sign Out</button>
+            <button type="button" onClick={() => signOut(auth)} style={logoutBtnStyle}>Sign Out / Đăng xuất</button>
           </>
         }
       />
       <div style={pageTitleRowStyle}>
-        <span style={pageTitleStyle}>Production Log</span>
+        <span style={pageTitleStyle}>Production Log<span style={pageTitleViStyle}>Nhật ký sản xuất</span></span>
       </div>
       <div style={containerStyle}>
         <DatBikeLogTab />
@@ -64,9 +64,17 @@ const pageTitleRowStyle = {
 };
 
 const pageTitleStyle = {
+  display: 'flex',
+  flexDirection: 'column',
   fontSize: '24px',
   fontWeight: '700',
   color: colors.textDark,
+};
+
+const pageTitleViStyle = {
+  fontSize: '14px',
+  fontWeight: '500',
+  color: colors.orange,
 };
 
 const userEmailStyle = { fontSize: '13px', color: '#cfcfcf' };

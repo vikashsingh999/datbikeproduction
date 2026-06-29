@@ -60,7 +60,7 @@ function DatBikeLogTab() {
         }
       );
     } catch (err) {
-      setCameraError('Could not access camera: ' + err.message);
+      setCameraError('Could not access camera / Không thể truy cập camera: ' + err.message);
       setCameraActive(false);
     }
   };
@@ -88,10 +88,10 @@ function DatBikeLogTab() {
 
         setOrderFetchStatus({ loading: false, error: '' });
       } else {
-        setOrderFetchStatus({ loading: false, error: data.error || 'Could not fetch order details.' });
+        setOrderFetchStatus({ loading: false, error: data.error || 'Could not fetch order details. / Không thể tải thông tin lệnh.' });
       }
     } catch {
-      setOrderFetchStatus({ loading: false, error: 'Server connection error.' });
+      setOrderFetchStatus({ loading: false, error: 'Server connection error. / Lỗi kết nối máy chủ.' });
     }
   };
 
@@ -137,7 +137,7 @@ function DatBikeLogTab() {
     setSerials((prev) => [...prev, value]);
     setSerialInput('');
     serialInputRef.current?.focus();
-    setGrStatus({ loading: true, success: null, message: `Posting GR for ${value}...` });
+    setGrStatus({ loading: true, success: null, message: `Posting GR for ${value}... / Đang nhập kho cho ${value}...` });
     try {
       const response = await fetch(`${API_URL}/api/inventory/goods-receipt`, {
         method: 'POST',
@@ -151,12 +151,12 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok) {
-        setGrStatus({ loading: false, success: true, message: `GR posted for serial ${value}` });
+        setGrStatus({ loading: false, success: true, message: `GR posted for serial ${value} / Đã nhập kho cho serial ${value}` });
       } else {
-        setGrStatus({ loading: false, success: false, message: data.error || `GR failed for ${value}` });
+        setGrStatus({ loading: false, success: false, message: data.error || `GR failed for ${value} / Nhập kho thất bại cho ${value}` });
       }
     } catch (err) {
-      setGrStatus({ loading: false, success: false, message: `Server error posting GR for ${value}` });
+      setGrStatus({ loading: false, success: false, message: `Server error posting GR for ${value} / Lỗi máy chủ khi nhập kho cho ${value}` });
     }
   };
 
@@ -173,7 +173,7 @@ function DatBikeLogTab() {
 
   const handleConfirmOperation = async () => {
     if (!order || !operation) {
-      setConfirmStatus({ loading: false, success: false, message: 'Order and Operation are required.' });
+      setConfirmStatus({ loading: false, success: false, message: 'Order and Operation are required. / Cần nhập lệnh và công đoạn.' });
       return;
     }
     setConfirmStatus({ loading: true, success: null, message: '' });
@@ -185,14 +185,14 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok) {
-        setConfirmStatus({ loading: false, success: true, message: `Operation confirmed for the order ${order}` });
+        setConfirmStatus({ loading: false, success: true, message: `Operation confirmed for the order ${order} / Đã xác nhận công đoạn cho lệnh ${order}` });
         lastFetchedConfirmRef.current = '';
         fetchConfirmationDetails(order);
       } else {
-        setConfirmStatus({ loading: false, success: false, message: data.error || 'Confirmation failed.' });
+        setConfirmStatus({ loading: false, success: false, message: data.error || 'Confirmation failed. / Xác nhận thất bại.' });
       }
     } catch (err) {
-      setConfirmStatus({ loading: false, success: false, message: 'Server connection error.' });
+      setConfirmStatus({ loading: false, success: false, message: 'Server connection error. / Lỗi kết nối máy chủ.' });
     }
   };
 
@@ -200,9 +200,9 @@ function DatBikeLogTab() {
   return (
     <div style={pageStyle}>
       <div style={sectionStyle}>
-        <div style={sectionTitleStyle}>1. Scan Order</div>
+        <div style={sectionTitleStyle}>1. Scan Order<span style={sectionTitleViStyle}>Quét mã lệnh</span></div>
         <div style={formGroup}>
-          <label style={labelStyle}>Manufacturing Order *</label>
+          <label style={labelStyle}>Manufacturing Order / Lệnh sản xuất *</label>
           <div style={scanRowStyle}>
             <input
               ref={orderInputRef}
@@ -212,45 +212,45 @@ function DatBikeLogTab() {
               onKeyDown={handleOrderKeyDown}
               onBlur={handleOrderBlur}
               style={inputStyle}
-              placeholder="Scan with handheld scanner or type order"
+              placeholder="Scan with handheld scanner or type order / Quét bằng máy quét hoặc nhập lệnh"
               autoFocus
             />
             {!cameraActive ? (
-              <button type="button" onClick={startCamera} style={secondaryBtnStyle}>Scan with Camera</button>
+              <button type="button" onClick={startCamera} style={secondaryBtnStyle}>Scan with Camera / Quét bằng camera</button>
             ) : (
-              <button type="button" onClick={stopCamera} style={secondaryBtnStyle}>Stop Camera</button>
+              <button type="button" onClick={stopCamera} style={secondaryBtnStyle}>Stop Camera / Dừng camera</button>
             )}
           </div>
           {cameraError && <div style={errorTextStyle}>{cameraError}</div>}
           <video ref={videoRef} style={cameraActive ? videoStyle : videoHiddenStyle} muted playsInline />
           {orderFetchStatus.loading && (
-            <div style={orderLoadingStyle}>Fetching order details...</div>
+            <div style={orderLoadingStyle}>Fetching order details... / Đang tải thông tin lệnh...</div>
           )}
           {orderFetchStatus.error && (
             <div style={errorTextStyle}>{orderFetchStatus.error}</div>
           )}
           {orderDetails && (
             <div style={orderDetailsCardStyle}>
-              <div style={orderDetailsTitle}>Order Details</div>
+              <div style={orderDetailsTitle}>Order Details / Chi tiết lệnh</div>
               <div style={orderDetailsGrid}>
                 <div style={orderDetailItem}>
-                  <span style={orderDetailLabel}>Material</span>
+                  <span style={orderDetailLabel}>Material / Vật tư</span>
                   <span style={orderDetailValue}>{material || '—'}</span>
                 </div>
                 <div style={orderDetailItem}>
-                  <span style={orderDetailLabel}>Operation</span>
+                  <span style={orderDetailLabel}>Operation / Công đoạn</span>
                   <span style={orderDetailValue}>{operation || '—'}</span>
                 </div>
                 <div style={orderDetailItem}>
-                  <span style={orderDetailLabel}>Quantity</span>
+                  <span style={orderDetailLabel}>Quantity / Số lượng</span>
                   <span style={orderDetailValue}>{orderDetails.quantity || '—'}</span>
                 </div>
                 <div style={orderDetailItem}>
-                  <span style={orderDetailLabel}>Work Center</span>
+                  <span style={orderDetailLabel}>Work Center / Khu vực sản xuất</span>
                   <span style={orderDetailValue}>{orderDetails.workCenter || '—'}</span>
                 </div>
                 <div style={orderDetailItem}>
-                  <span style={orderDetailLabel}>Storage Location</span>
+                  <span style={orderDetailLabel}>Storage Location / Vị trí kho</span>
                   <span style={orderDetailValue}>{orderDetails.storageLocation || '—'}</span>
                 </div>
               </div>
@@ -258,14 +258,14 @@ function DatBikeLogTab() {
           )}
           {confirmations.length > 0 && (
             <div style={confirmDetailsCardStyle}>
-              <div style={orderDetailsTitle}>Confirmation Details ({confirmations.length})</div>
+              <div style={orderDetailsTitle}>Confirmation Details / Chi tiết xác nhận ({confirmations.length})</div>
               {confirmations.map((conf, idx) => (
                 <div key={idx} style={idx < confirmations.length - 1 ? { ...confirmRowStyle, borderBottom: '1px solid #b5d6a7' } : confirmRowStyle}>
                   <div style={orderDetailsGrid}>
-                    <div style={orderDetailItem}><span style={orderDetailLabel}>Confirmation No.</span><span style={orderDetailValue}>{conf.confirmationGroup || '—'}</span></div>
-                    <div style={orderDetailItem}><span style={orderDetailLabel}>Operation</span><span style={orderDetailValue}>{conf.operation || '—'}</span></div>
-                    <div style={orderDetailItem}><span style={orderDetailLabel}>Confirmed Qty</span><span style={orderDetailValue}>{conf.confirmedQuantity ? `${conf.confirmedQuantity} ${conf.unit}` : '—'}</span></div>
-                    <div style={orderDetailItem}><span style={orderDetailLabel}>Entered By</span><span style={orderDetailValue}>{conf.enteredBy || '—'}</span></div>
+                    <div style={orderDetailItem}><span style={orderDetailLabel}>Confirmation No. / Số xác nhận</span><span style={orderDetailValue}>{conf.confirmationGroup || '—'}</span></div>
+                    <div style={orderDetailItem}><span style={orderDetailLabel}>Operation / Công đoạn</span><span style={orderDetailValue}>{conf.operation || '—'}</span></div>
+                    <div style={orderDetailItem}><span style={orderDetailLabel}>Confirmed Qty / SL đã xác nhận</span><span style={orderDetailValue}>{conf.confirmedQuantity ? `${conf.confirmedQuantity} ${conf.unit}` : '—'}</span></div>
+                    <div style={orderDetailItem}><span style={orderDetailLabel}>Entered By / Người nhập</span><span style={orderDetailValue}>{conf.enteredBy || '—'}</span></div>
                   </div>
                 </div>
               ))}
@@ -275,29 +275,29 @@ function DatBikeLogTab() {
       </div>
 
       <div style={sectionStyle}>
-        <div style={sectionTitleStyle}>2. Confirm Operation</div>
+        <div style={sectionTitleStyle}>2. Confirm Operation<span style={sectionTitleViStyle}>Xác nhận công đoạn</span></div>
         <div style={formGroup}>
-          <label style={labelStyle}>Confirmation Text</label>
+          <label style={labelStyle}>Confirmation Text / Ghi chú xác nhận</label>
           <textarea
             value={confirmationText}
             onChange={(e) => setConfirmationText(e.target.value)}
             style={textareaStyle}
-            placeholder="Enter confirmation notes or remarks..."
+            placeholder="Enter confirmation notes or remarks... / Nhập ghi chú hoặc nhận xét..."
             rows={3}
           />
         </div>
         <div style={rowStyle}>
           <div style={formGroup}>
-            <label style={labelStyle}>Yield Quantity</label>
+            <label style={labelStyle}>Yield Quantity / Số lượng sản phẩm</label>
             <input type="number" value={yieldQuantity} onChange={(e) => setYieldQuantity(e.target.value)} style={inputStyle} />
           </div>
           <div style={formGroup}>
-            <label style={labelStyle}>Unit</label>
+            <label style={labelStyle}>Unit / Đơn vị</label>
             <input type="text" value={confirmUnit} onChange={(e) => setConfirmUnit(e.target.value)} style={inputStyle} />
           </div>
         </div>
         <button type="button" onClick={handleConfirmOperation} disabled={confirmStatus.loading} style={btnStyle}>
-          {confirmStatus.loading ? 'Confirming...' : 'Confirm Operation'}
+          {confirmStatus.loading ? 'Confirming... / Đang xác nhận...' : 'Confirm Operation / Xác nhận công đoạn'}
         </button>
         {confirmStatus.success === false && confirmStatus.message && (
           <div style={{ ...statusBox, backgroundColor: '#fce4d6', color: '#c65911' }}>
@@ -307,9 +307,9 @@ function DatBikeLogTab() {
       </div>
 
       <div style={sectionStyle}>
-        <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number</div>
+        <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number<span style={sectionTitleViStyle}>Nhập kho theo số Serial</span></div>
         <div style={formGroup}>
-          <label style={labelStyle}>Serial Number *</label>
+          <label style={labelStyle}>Serial Number / Số Serial *</label>
           <div style={scanRowStyle}>
             <input
               ref={serialInputRef}
@@ -318,9 +318,9 @@ function DatBikeLogTab() {
               onChange={(e) => setSerialInput(e.target.value)}
               onKeyDown={handleSerialKeyDown}
               style={inputStyle}
-              placeholder="Scan or type serial number, press Enter to add"
+              placeholder="Scan or type serial number, press Enter to add / Quét hoặc nhập số serial, nhấn Enter để thêm"
             />
-            <button type="button" onClick={addSerial} style={secondaryBtnStyle}>Add</button>
+            <button type="button" onClick={addSerial} style={secondaryBtnStyle}>Add / Thêm</button>
           </div>
         </div>
         {serials.length > 0 && (
@@ -345,7 +345,8 @@ function DatBikeLogTab() {
 
 const pageStyle = { display: 'flex', flexDirection: 'column', gap: '20px' };
 const sectionStyle = { display: 'flex', flexDirection: 'column', gap: '15px', padding: '16px', border: '1px solid #e5e5e5', borderRadius: '4px' };
-const sectionTitleStyle = { fontWeight: '600', color: '#32363a', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '0.3px' };
+const sectionTitleStyle = { display: 'flex', flexDirection: 'column', gap: '2px', fontWeight: '600', color: '#32363a', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '0.3px' };
+const sectionTitleViStyle = { fontWeight: '500', fontSize: '12px', color: '#EE6A1F', textTransform: 'none', letterSpacing: 'normal' };
 const rowStyle = { display: 'flex', gap: '15px' };
 const formGroup = { display: 'flex', flexDirection: 'column', gap: '5px', flex: 1 };
 const labelStyle = { fontWeight: '600', fontSize: '13px', color: '#6a6d70' };

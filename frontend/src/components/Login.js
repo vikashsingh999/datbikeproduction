@@ -21,11 +21,11 @@ function Login() {
     } catch (err) {
       const code = err.code || '';
       if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
-        setError('Invalid email or password.');
+        setError('Invalid email or password. / Email hoặc mật khẩu không đúng.');
       } else if (code === 'auth/too-many-requests') {
-        setError('Too many attempts. Please try again later.');
+        setError('Too many attempts. Please try again later. / Quá nhiều lần thử. Vui lòng thử lại sau.');
       } else {
-        setError('Could not sign in. Please try again.');
+        setError('Could not sign in. Please try again. / Không thể đăng nhập. Vui lòng thử lại.');
       }
       setLoading(false);
     }
@@ -36,8 +36,8 @@ function Login() {
       <DatBikeHeader />
       <div style={centerStyle}>
         <form onSubmit={handleSubmit} style={cardStyle}>
-          <div style={titleStyle}>Sign In</div>
-          <div style={subtitleStyle}>Dat.Bike Production Log</div>
+          <div style={titleStyle}>Sign In / Đăng nhập</div>
+          <div style={subtitleStyle}>Dat.Bike Production Log / Nhật ký sản xuất</div>
 
           <div style={formGroup}>
             <label style={labelStyle}>Email</label>
@@ -53,13 +53,13 @@ function Login() {
           </div>
 
           <div style={formGroup}>
-            <label style={labelStyle}>Password</label>
+            <label style={labelStyle}>Password / Mật khẩu</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={inputStyle}
-              placeholder="Enter your password"
+              placeholder="Enter your password / Nhập mật khẩu"
               required
             />
           </div>
@@ -67,7 +67,7 @@ function Login() {
           {error && <div style={errorTextStyle}>{error}</div>}
 
           <button type="submit" disabled={loading} style={btnStyle}>
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Signing in... / Đang đăng nhập...' : 'Sign In / Đăng nhập'}
           </button>
         </form>
       </div>

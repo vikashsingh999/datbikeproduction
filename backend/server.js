@@ -63,6 +63,26 @@ function todayIso() {
     return new Date().toISOString().split('T')[0] + 'T00:00:00';
 }
 
+// Count how many units have already been received against an order via goods
+// receipt (movement type 101). Each GR posts one serial with QuantityInEntryUnit
+// '1', so we sum the received quantities to get the total already performed.
+async function countGoodsReceipts(orderId) {
+    const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
+        + `?$filter=ManufacturingOrder eq '${orderId}' and GoodsMovementType eq '101'`
+        + `&$select=QuantityInEntryUnit,IsReversed,IsReversal&$format=json`;
+    const response = await axios.get(url, {
+        auth: sapAuth,
+        headers: { 'Accept': 'application/json' },
+    });
+    const items = response.data?.d?.results || [];
+    // Ignore reversed/reversal items so cancelled receipts don't count.
+    return items.reduce((sum, item) => {
+        if (item.IsReversed === true || item.IsReversal === true) return sum;
+        const qty = parseFloat(item.QuantityInEntryUnit);
+        return sum + (Number.isFinite(qty) ? qty : 0);
+    }, 0);
+}
+
 // Endpoint 0: Fetch Order Details
 app.post('/api/orders/details', async (req, res) => {
     try {
