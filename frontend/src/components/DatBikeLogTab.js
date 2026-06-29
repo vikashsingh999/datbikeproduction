@@ -17,6 +17,7 @@ function DatBikeLogTab() {
   const [storageLocation, setStorageLocation] = useState('0175W');
   const [serialInput, setSerialInput] = useState('');
   const [serials, setSerials] = useState([]);
+  const [receivedQuantity, setReceivedQuantity] = useState(0);
   const [grStatus, setGrStatus] = useState({ loading: false, success: null, message: '' });
 
   const [cameraActive, setCameraActive] = useState(false);
@@ -79,12 +80,13 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok && data.orderDetails) {
-        const { material: mat, operation: op, quantity: qty, storageLocation: sl } = data.orderDetails;
+        const { material: mat, operation: op, quantity: qty, storageLocation: sl, receivedQuantity: rq } = data.orderDetails;
         setOrderDetails(data.orderDetails);
         if (mat) setMaterial(mat);
         if (op) setOperation(op);
         if (qty) setYieldQuantity(qty);
         if (sl) setStorageLocation(sl);
+        setReceivedQuantity(Number(rq) || 0);
 
         setOrderFetchStatus({ loading: false, error: '' });
       } else {
@@ -134,6 +136,12 @@ function DatBikeLogTab() {
       setSerialInput('');
       return;
     }
+    const planned = parseFloat(orderDetails?.quantity);
+    if (Number.isFinite(planned) && planned > 0 && receivedQuantity >= planned) {
+      setGrStatus({ loading: false, success: false, message: `Goods receipt already complete: ${receivedQuantity}/${planned} received. / Đã nhập kho đủ: ${receivedQuantity}/${planned}.` });
+      setSerialInput('');
+      return;
+    }
     setSerials((prev) => [...prev, value]);
     setSerialInput('');
     serialInputRef.current?.focus();
@@ -151,6 +159,7 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok) {
+        setReceivedQuantity((prev) => prev + 1);
         setGrStatus({ loading: false, success: true, message: `GR posted for serial ${value} / Đã nhập kho cho serial ${value}` });
       } else {
         setGrStatus({ loading: false, success: false, message: data.error || `GR failed for ${value} / Nhập kho thất bại cho ${value}` });
@@ -197,6 +206,10 @@ function DatBikeLogTab() {
   };
 
 
+  const plannedQty = parseFloat(orderDetails?.quantity);
+  const hasPlannedQty = Number.isFinite(plannedQty) && plannedQty > 0;
+  const grComplete = hasPlannedQty && receivedQuantity >= plannedQty;
+
   return (
     <div style={pageStyle}>
       <div style={sectionStyle}>
@@ -208,7 +221,7 @@ function DatBikeLogTab() {
               ref={orderInputRef}
               type="text"
               value={order}
-              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
+              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); setReceivedQuantity(0); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
               onKeyDown={handleOrderKeyDown}
               onBlur={handleOrderBlur}
               style={inputStyle}
@@ -259,6 +272,13 @@ function DatBikeLogTab() {
           {confirmations.length > 0 && (
             <div style={confirmDetailsCardStyle}>
               <div style={orderDetailsTitle}>Confirmation Details / Chi tiết xác nhận ({confirmations.length})</div>
+              <div style={confirmTotalStyle}>
+                Total Confirmed Qty / Tổng SL đã xác nhận:&nbsp;
+                <strong>
+                  {confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0)}
+                  {confirmations[0]?.unit ? ` ${confirmations[0].unit}` : ''}
+                </strong>
+              </div>
               {confirmations.map((conf, idx) => (
                 <div key={idx} style={idx < confirmations.length - 1 ? { ...confirmRowStyle, borderBottom: '1px solid #b5d6a7' } : confirmRowStyle}>
                   <div style={orderDetailsGrid}>
@@ -308,6 +328,12 @@ function DatBikeLogTab() {
 
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number<span style={sectionTitleViStyle}>Nhập kho theo số Serial</span></div>
+        {hasPlannedQty && (
+          <div style={grComplete ? grProgressDoneStyle : grProgressStyle}>
+            Received / Đã nhập kho: <strong>{receivedQuantity} / {plannedQty}</strong>
+            {grComplete && ' — Complete / Hoàn tất'}
+          </div>
+        )}
         <div style={formGroup}>
           <label style={labelStyle}>Serial Number / Số Serial *</label>
           <div style={scanRowStyle}>
@@ -319,8 +345,9 @@ function DatBikeLogTab() {
               onKeyDown={handleSerialKeyDown}
               style={inputStyle}
               placeholder="Scan or type serial number, press Enter to add / Quét hoặc nhập số serial, nhấn Enter để thêm"
+              disabled={grComplete}
             />
-            <button type="button" onClick={addSerial} style={secondaryBtnStyle}>Add / Thêm</button>
+            <button type="button" onClick={addSerial} style={grComplete ? { ...secondaryBtnStyle, opacity: 0.5, cursor: 'not-allowed' } : secondaryBtnStyle} disabled={grComplete}>Add / Thêm</button>
           </div>
         </div>
         {serials.length > 0 && (
@@ -371,5 +398,8 @@ const orderDetailItem = { display: 'flex', flexDirection: 'column', gap: '4px' }
 const orderDetailLabel = { fontSize: '11px', fontWeight: '600', color: '#6a6d70', textTransform: 'uppercase' };
 const orderDetailValue = { fontSize: '14px', fontWeight: '500', color: '#32363a' };
 const textareaStyle = { padding: '8px 10px', borderRadius: '4px', border: '1px solid #89919a', fontSize: '14px', color: '#32363a', backgroundColor: '#fff', resize: 'vertical', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' };
+const confirmTotalStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
+const grProgressStyle = { fontSize: '13px', color: '#6a6d70', backgroundColor: '#f3f4f5', borderRadius: '4px', padding: '6px 10px' };
+const grProgressDoneStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', fontWeight: '600' };
 
 export default DatBikeLogTab;
