@@ -91,18 +91,6 @@ async function countGoodsReceipts(orderId) {
     }, 0);
 }
 
-// Fetch the planned total quantity for an order, used to cap goods receipts.
-async function getOrderPlannedQuantity(orderId) {
-    const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2('${orderId}')`
-        + `?$select=MfgOrderPlannedTotalQty&$format=json`;
-    const response = await axios.get(url, {
-        auth: sapAuth,
-        headers: { 'Accept': 'application/json' },
-    });
-    const qty = parseFloat(response.data?.d?.MfgOrderPlannedTotalQty);
-    return Number.isFinite(qty) ? qty : 0;
-}
-
 // Endpoint 0: Fetch Order Details
 app.post('/api/orders/details', async (req, res) => {
     try {
@@ -251,18 +239,6 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
         const { orderId, material, storageLocation, serialNumber } = req.body;
         if (!orderId || !material || !serialNumber) {
             return res.status(400).json({ error: 'Missing mandatory fields: orderId, material, serialNumber' });
-        }
-
-        // Block goods receipt beyond the order's planned quantity. Each GR posts a
-        // single unit, so a new receipt requires received + 1 <= planned.
-        const [plannedQuantity, receivedQuantity] = await Promise.all([
-            getOrderPlannedQuantity(orderId),
-            countGoodsReceipts(orderId),
-        ]);
-        if (plannedQuantity > 0 && receivedQuantity + 1 > plannedQuantity) {
-            return res.status(409).json({
-                error: `Goods receipt already complete for order ${orderId}: ${receivedQuantity}/${plannedQuantity} units received. No further GR allowed.`,
-            });
         }
 
         // Use confirmation service as CSRF token source (same as original n8n flow)
