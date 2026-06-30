@@ -185,6 +185,7 @@ function DatBikeLogTab() {
       setConfirmStatus({ loading: false, success: false, message: 'Order and Operation are required. / Cần nhập lệnh và công đoạn.' });
       return;
     }
+    // Over-confirming is allowed; the UI shows a soft warning but does not block.
     setConfirmStatus({ loading: true, success: null, message: '' });
     try {
       const response = await fetch(`${API_URL}/api/operations/confirm`, {
@@ -209,6 +210,8 @@ function DatBikeLogTab() {
   const plannedQty = parseFloat(orderDetails?.quantity);
   const hasPlannedQty = Number.isFinite(plannedQty) && plannedQty > 0;
   const grComplete = hasPlannedQty && receivedQuantity >= plannedQty;
+  const totalConfirmedQty = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
+  const confirmComplete = hasPlannedQty && totalConfirmedQty >= plannedQty;
 
   return (
     <div style={pageStyle}>
@@ -275,7 +278,7 @@ function DatBikeLogTab() {
               <div style={confirmTotalStyle}>
                 Total Confirmed Qty / Tổng SL đã xác nhận:&nbsp;
                 <strong>
-                  {confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0)}
+                  {totalConfirmedQty}{hasPlannedQty ? ` / ${plannedQty}` : ''}
                   {confirmations[0]?.unit ? ` ${confirmations[0].unit}` : ''}
                 </strong>
               </div>
@@ -316,6 +319,13 @@ function DatBikeLogTab() {
             <input type="text" value={confirmUnit} onChange={(e) => setConfirmUnit(e.target.value)} style={inputStyle} />
           </div>
         </div>
+        {confirmComplete && (
+          <div style={confirmWarningStyle}>
+            {totalConfirmedQty > plannedQty
+              ? `⚠ Total confirmed quantity (${totalConfirmedQty}) exceeds the order quantity (${plannedQty}). / Tổng SL đã xác nhận (${totalConfirmedQty}) vượt quá SL lệnh (${plannedQty}).`
+              : `⚠ Total confirmed quantity (${totalConfirmedQty}) has reached the order quantity (${plannedQty}). / Tổng SL đã xác nhận (${totalConfirmedQty}) đã đạt SL lệnh (${plannedQty}).`}
+          </div>
+        )}
         <button type="button" onClick={handleConfirmOperation} disabled={confirmStatus.loading} style={btnStyle}>
           {confirmStatus.loading ? 'Confirming... / Đang xác nhận...' : 'Confirm Operation / Xác nhận công đoạn'}
         </button>
@@ -399,6 +409,7 @@ const orderDetailLabel = { fontSize: '11px', fontWeight: '600', color: '#6a6d70'
 const orderDetailValue = { fontSize: '14px', fontWeight: '500', color: '#32363a' };
 const textareaStyle = { padding: '8px 10px', borderRadius: '4px', border: '1px solid #89919a', fontSize: '14px', color: '#32363a', backgroundColor: '#fff', resize: 'vertical', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' };
 const confirmTotalStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
+const confirmWarningStyle = { fontSize: '13px', fontWeight: '600', color: '#9c6500', backgroundColor: '#fff4ce', border: '1px solid #f2c94c', borderRadius: '4px', padding: '8px 10px' };
 const grProgressStyle = { fontSize: '13px', color: '#6a6d70', backgroundColor: '#f3f4f5', borderRadius: '4px', padding: '6px 10px' };
 const grProgressDoneStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', fontWeight: '600' };
 
