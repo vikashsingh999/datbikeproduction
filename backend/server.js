@@ -279,7 +279,21 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             },
         });
 
+
+        // Trigger individual GR slip output — non-blocking (GR already succeeded)
+        try {
+            await triggerGRIndividualSlip({ MaterialDocument, MaterialDocumentYear });
+            console.log('Output slip triggered successfully');
+        } catch (outputErr) {
+            // Log but don't fail the GR response — output can be re-triggered manually
+            console.warn('Output slip trigger failed (GR still succeeded):', outputErr?.response?.data || outputErr.message);
+        }
+
+
+
+
         return res.status(200).json({ success: true, sapResponse: sapResponse.data });
+
     } catch (error) {
         console.error('Error posting GR to SAP:', error.message);
         const sapMessage = error.response?.data?.error?.message?.value
@@ -289,6 +303,41 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
         return res.status(status).json({ error: sapMessage, details: error.response?.data });
     }
 });
+
+async function triggerGRIndividualSlip({ MaterialDocument, MaterialDocumentYear }) {
+    const outputServiceBase = `${SAP_BASE_URL}/sap/opu/odata/sap/API_BUSINESS_DOCUMENT_OUTPUT_REQUEST_SRV`;
+
+    const { csrfToken, cookies } = await fetchCsrfToken(
+        `${outputServiceBase}/A_BusDocOutputRequest?$top=1&$format=json`
+    );
+
+    const outputPayload = {
+        BusinessDocumentType: 'MATDOC',       // Material document object type
+        BusinessDocument: MaterialDocument,
+        BusinessDocumentYear: MaterialDocumentYear,
+        OutputType: 'WE01',                   // WE01 = Individual GR Slip; WE03 = Collective
+        TransmissionMedium: '1',              // 1 = Print; '5' = Email
+        NumberOfCopies: 1,
+        PrintMode: 'I',                       // I = Individual (not collective)
+        Language: 'EN',
+    };
+
+    console.log('Triggering output determination:', JSON.stringify(outputPayload, null, 2));
+
+    await axios.post(
+        `${outputServiceBase}/A_BusDocOutputRequest`,
+        outputPayload,
+        {
+            auth: sapAuth,
+            headers: {
+                'x-csrf-token': csrfToken,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Cookie': Array.isArray(cookies) ? cookies.join('; ') : (cookies || ''),
+            },
+        }
+    );
+}
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Backend server running on port ${PORT}`));
