@@ -311,16 +311,16 @@ async function triggerGRIndividualSlip({ MaterialDocument, MaterialDocumentYear 
         `${outputServiceBase}/A_BusDocOutputRequest?$top=1&$format=json`
     );
 
-    const outputPayload = {
-        BusinessDocumentType: 'MATDOC',       // Material document object type
-        BusinessDocument: MaterialDocument,
-        BusinessDocumentYear: MaterialDocumentYear,
-        OutputType: 'WE01',                   // WE01 = Individual GR Slip; WE03 = Collective
-        TransmissionMedium: '1',              // 1 = Print; '5' = Email
-        NumberOfCopies: 1,
-        PrintMode: 'I',                       // I = Individual (not collective)
-        Language: 'EN',
-    };
+  const outputPayload = {
+    BusinessDocumentType: 'MM_MATDOC',
+    BusinessDocument: MaterialDocument.padStart(10, '0'),
+    BusinessDocumentYear: MaterialDocumentYear,
+    OutputType: 'GOODS_RECEIPT_ORD_SLIP',      // ← Goods Receipt for Order (row 3)
+    TransmissionMedium: '1',
+    NumberOfCopies: '1',
+    PrintMode: 'I',
+    Language: 'EN',
+};
 
     console.log('Triggering output determination:', JSON.stringify(outputPayload, null, 2));
 
