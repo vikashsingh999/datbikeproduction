@@ -250,6 +250,8 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             PostingDate: grDate,
             DocumentDate: grDate,
             GoodsMovementCode: '02',
+               VersionForPrintingSlip: '1',        
+    ManualPrintIsTriggered: 'X',         
             MaterialDocumentHeaderText: serialNumber,
             to_MaterialDocumentItem: [
                 {
