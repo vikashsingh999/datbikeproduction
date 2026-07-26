@@ -183,8 +183,15 @@ app.post('/api/operations/confirm', async (req, res) => {
         const csrfBase = `${SAP_BASE_URL}/sap/opu/odata/sap/API_PROD_ORDER_CONFIRMATION_2_SRV/`;
         const { csrfToken, cookies } = await fetchCsrfToken(csrfBase);
 
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+      
+
+        const now = new Date();
+const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+const hours = now.getHours();
+const minutes = now.getMinutes();
+const seconds = now.getSeconds();
+
+
 
         const payload = {
             OrderID: orderId,
@@ -197,8 +204,8 @@ app.post('/api/operations/confirm', async (req, res) => {
             OpenReservationsIsCleared: false,
             IsReversed: false,
             IsReversal: false,
-            ConfirmationEntryDate: `/Date(${today.getTime()})/`,
-            ConfirmationEntryTime: 'PT08H04M34S',
+           ConfirmationEntryDate: `/Date(${startOfDay.getTime()})/`,
+            ConfirmationEntryTime: `PT${String(hours).padStart(2, '0')}H${String(minutes).padStart(2, '0')}M${String(seconds).padStart(2, '0')}S`,
             Plant: '1000',
             WorkCenter: workCenter || '',
             ConfirmationUnit: 'PCE',
@@ -245,7 +252,8 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
         const csrfBase = `${SAP_BASE_URL}/sap/opu/odata/sap/API_PROD_ORDER_CONFIRMATION_2_SRV/ProdnOrdConf2?$top=1&$format=json`;
         const { csrfToken, cookies } = await fetchCsrfToken(csrfBase);
 
-        const grDate = '2026-04-15T00:00:00';
+        const grDate = todayIso();
+
         const payload = {
             PostingDate: grDate,
             DocumentDate: grDate,
