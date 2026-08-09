@@ -305,7 +305,75 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
     }
 });
 
+// Default look-back window (months) for the duplicate-serial check. Configurable
+// via env so QA (where GRs post with a fixed past date) can widen it without
+// touching production, which posts with real dates and uses the 2-month default.
+const DUP_CHECK_MONTHS = Number(process.env.DUP_CHECK_MONTHS) > 0 ? Number(process.env.DUP_CHECK_MONTHS) : 2;
 
+// Fetch every "serial" value already received (goods movement 101) for a given
+// material within the last `months` months. Used to block duplicate serials.
+//
+// IMPORTANT: the app writes the scanned value into BOTH the material-document
+// Header Text and the item's serial number. Serial-managed materials keep it in
+// to_SerialNumbers; NON-serial-managed materials keep it ONLY in the header text
+// (to_SerialNumbers comes back empty). So we must collect from BOTH sources or
+// duplicates on non-serial materials slip through (this was the reported bug).
+//
+// Filters the date on the material-document header via the nav path (verified
+// working on tenant 416787) so SAP does the date scoping. Cancelled/reversed
+// receipts are ignored so a reversed GR doesn't cause a false block.
+async function fetchUsedSerials(material, months = DUP_CHECK_MONTHS) {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - months);
+    cutoff.setHours(0, 0, 0, 0);
+    const since = cutoff.toISOString().split('.')[0]; // YYYY-MM-DDTHH:mm:ss
+
+    const filter = `Material eq '${material}' and GoodsMovementType eq '101'`
+        + ` and to_MaterialDocumentHeader/PostingDate ge datetime'${since}'`;
+    // Encode spaces only. Do NOT full-encode: percent-encoding the '/' in the
+    // header nav path makes SAP silently return an empty set. No $select here so
+    // both expanded navs (serials + header) are returned intact.
+    let url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
+        + `?$filter=${filter.replace(/ /g, '%20')}`
+        + `&$expand=to_SerialNumbers,to_MaterialDocumentHeader`
+        + `&$format=json&$top=500`;
+
+    const used = new Set();
+    const add = (v) => { if (v && String(v).trim()) used.add(String(v).trim().toUpperCase()); };
+    // Follow SAP's server-side paging (d.__next) with a safety cap on pages.
+    for (let page = 0; page < 100 && url; page++) {
+        let response;
+        try {
+            response = await axios.get(url, { auth: sapAuth, headers: { Accept: 'application/json' } });
+        } catch (error) {
+            if (error.response?.status === 404) break; // no documents match -> nothing used
+            throw error;
+        }
+        const items = response.data?.d?.results || [];
+        for (const item of items) {
+            if (item.GoodsMovementIsCancelled === true) continue;
+            add(item.to_MaterialDocumentHeader?.MaterialDocumentHeaderText); // non-serial materials
+            for (const s of (item.to_SerialNumbers?.results || [])) add(s?.SerialNumber); // serial materials
+        }
+        url = response.data?.d?.__next || null; // absolute URL to the next page, if any
+    }
+    return used;
+}
+
+// Endpoint 4: Used serial values for a material (last N months) — duplicate guard.
+app.post('/api/inventory/used-serials', async (req, res) => {
+    try {
+        const { material, months } = req.body;
+        if (!material) return res.status(400).json({ error: 'Missing required field: material' });
+        // Body may override the window, else use the env-configured default.
+        const window = Number(months) > 0 ? Number(months) : DUP_CHECK_MONTHS;
+        const set = await fetchUsedSerials(material, window);
+        return res.status(200).json({ success: true, material, months: window, serials: Array.from(set) });
+    } catch (error) {
+        console.error('Error fetching used serials:', error.message);
+        return res.status(500).json({ error: error.message, details: error.response?.data });
+    }
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Backend server running on port ${PORT}`));

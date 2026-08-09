@@ -1,0 +1,13 @@
+# Dependencies
+/node_modules
+
+# Environment — SECRET (SAP password, Firebase service account). Never commit.
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Misc
+.DS_Store
