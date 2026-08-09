@@ -19,9 +19,16 @@ function DatBikeLogTab() {
   const [serials, setSerials] = useState([]);
   const [receivedQuantity, setReceivedQuantity] = useState(0);
   const [grStatus, setGrStatus] = useState({ loading: false, success: null, message: '' });
+  // Serial numbers already received for this material in the last 2 months
+  // (uppercased, from SAP) — used to block duplicates. null = not loaded yet.
+  const [usedSerials, setUsedSerials] = useState(null);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState('');
+
+  // Custom warning modal shown when a confirmation would exceed the order quantity.
+  // null = hidden; otherwise { newTotal, planned }.
+  const [qtyWarning, setQtyWarning] = useState(null);
 
   const orderInputRef = useRef(null);
   const operationInputRef = useRef(null);
@@ -87,6 +94,7 @@ function DatBikeLogTab() {
         if (qty) setYieldQuantity(qty);
         if (sl) setStorageLocation(sl);
         setReceivedQuantity(Number(rq) || 0);
+        if (mat) fetchUsedSerials(mat);
 
         setOrderFetchStatus({ loading: false, error: '' });
       } else {
@@ -94,6 +102,27 @@ function DatBikeLogTab() {
       }
     } catch {
       setOrderFetchStatus({ loading: false, error: 'Server connection error. / Lỗi kết nối máy chủ.' });
+    }
+  };
+
+  // Load the serials already received for this material in the last 2 months so
+  // we can block duplicates. Stored uppercased for case-insensitive matching.
+  const fetchUsedSerials = async (mat) => {
+    if (!mat) return;
+    try {
+      const response = await fetch(`${API_URL}/api/inventory/used-serials`, {
+        method: 'POST',
+        headers: await authHeaders(),
+        body: JSON.stringify({ material: mat }),
+      });
+      const data = await response.json();
+      if (response.ok && Array.isArray(data.serials)) {
+        setUsedSerials(new Set(data.serials.map((s) => String(s).trim().toUpperCase())));
+      } else {
+        setUsedSerials(new Set()); // fail open — SAP still rejects true duplicates on post
+      }
+    } catch {
+      setUsedSerials(new Set());
     }
   };
 
@@ -132,13 +161,34 @@ function DatBikeLogTab() {
 
   const addSerial = async () => {
     const value = serialInput.trim();
-    if (!value || serials.includes(value)) {
+    if (!value) {
       setSerialInput('');
       return;
     }
-    const planned = parseFloat(orderDetails?.quantity);
-    if (Number.isFinite(planned) && planned > 0 && receivedQuantity >= planned) {
-      setGrStatus({ loading: false, success: false, message: `Goods receipt already complete: ${receivedQuantity}/${planned} received. / Đã nhập kho đủ: ${receivedQuantity}/${planned}.` });
+    const normalized = value.toUpperCase();
+    // Duplicate guard: block (but keep the typed value) if this serial was already
+    // received for this material in the last 2 months, or already entered in this
+    // session. Operator can edit the value but cannot continue with a duplicate.
+    if (serials.some((s) => s.toUpperCase() === normalized)) {
+      setGrStatus({ loading: false, success: false, message: `Duplicate: serial ${value} was already entered in this session. / Trùng lặp: serial ${value} đã được nhập trong phiên này.` });
+      return;
+    }
+    if (usedSerials && usedSerials.has(normalized)) {
+      setGrStatus({ loading: false, success: false, message: `Duplicate serial number: ${value} already exists for this material. Cannot continue. / Số serial trùng lặp: ${value} đã tồn tại cho vật tư này. Không thể tiếp tục.` });
+      return;
+    }
+    // Restrict serial scans to the confirmed yield quantity (not the planned
+    // order quantity). Must confirm the operation first, then only that many
+    // serials may be scanned. serials.length counts in-flight GRs too, so a fast
+    // scanner can't slip past the limit.
+    const confirmedYield = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
+    if (!(confirmedYield > 0)) {
+      setGrStatus({ loading: false, success: false, message: `Confirm the operation first — no confirmed quantity yet. / Hãy xác nhận công đoạn trước — chưa có SL đã xác nhận.` });
+      setSerialInput('');
+      return;
+    }
+    if (serials.length >= confirmedYield) {
+      setGrStatus({ loading: false, success: false, message: `Cannot scan more than the confirmed quantity: ${serials.length}/${confirmedYield} serials. / Không thể quét vượt quá SL đã xác nhận: ${serials.length}/${confirmedYield} serial.` });
       setSerialInput('');
       return;
     }
@@ -160,6 +210,7 @@ function DatBikeLogTab() {
       const data = await response.json();
       if (response.ok) {
         setReceivedQuantity((prev) => prev + 1);
+        setUsedSerials((prev) => new Set(prev || []).add(normalized));
         setGrStatus({ loading: false, success: true, message: `GR posted for serial ${value} / Đã nhập kho cho serial ${value}` });
       } else {
         setGrStatus({ loading: false, success: false, message: data.error || `GR failed for ${value} / Nhập kho thất bại cho ${value}` });
@@ -185,17 +236,14 @@ function DatBikeLogTab() {
       setConfirmStatus({ loading: false, success: false, message: 'Order and Operation are required. / Cần nhập lệnh và công đoạn.' });
       return;
     }
-    // Soft warning (not a block): if this confirmation would push the total over
-    // the order quantity, ask the user to confirm before proceeding.
+    // Hard block: if this confirmation would push the total over the order
+    // quantity, show a branded warning modal and stop. The user can only cancel.
     const planned = parseFloat(orderDetails?.quantity);
     const alreadyConfirmed = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
     const newTotal = alreadyConfirmed + (parseFloat(yieldQuantity) || 0);
     if (Number.isFinite(planned) && planned > 0 && newTotal > planned) {
-      const proceed = window.confirm(
-        `Warning: Total confirmed quantity will be ${newTotal}, which exceeds the order quantity (${planned}). Do you want to continue?\n\n`
-        + `Cảnh báo: Tổng SL đã xác nhận sẽ là ${newTotal}, vượt quá SL lệnh (${planned}). Bạn có muốn tiếp tục không?`
-      );
-      if (!proceed) return;
+      setQtyWarning({ newTotal, planned });
+      return;
     }
     setConfirmStatus({ loading: true, success: null, message: '' });
     try {
@@ -220,8 +268,10 @@ function DatBikeLogTab() {
 
   const plannedQty = parseFloat(orderDetails?.quantity);
   const hasPlannedQty = Number.isFinite(plannedQty) && plannedQty > 0;
-  const grComplete = hasPlannedQty && receivedQuantity >= plannedQty;
   const totalConfirmedQty = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
+  // Serial scanning is capped by the confirmed yield, not the planned order quantity.
+  const grComplete = totalConfirmedQty > 0 && receivedQuantity >= totalConfirmedQty;
+  const scanLimitReached = totalConfirmedQty > 0 && serials.length >= totalConfirmedQty;
 
   return (
     <div style={pageStyle}>
@@ -234,7 +284,7 @@ function DatBikeLogTab() {
               ref={orderInputRef}
               type="text"
               value={order}
-              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); setReceivedQuantity(0); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
+              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); setReceivedQuantity(0); setUsedSerials(null); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
               onKeyDown={handleOrderKeyDown}
               onBlur={handleOrderBlur}
               style={inputStyle}
@@ -341,9 +391,10 @@ function DatBikeLogTab() {
 
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number<span style={sectionTitleViStyle}>Nhập kho theo số Serial</span></div>
-        {hasPlannedQty && (
+        {totalConfirmedQty > 0 && (
           <div style={grComplete ? grProgressDoneStyle : grProgressStyle}>
-            Received / Đã nhập kho: <strong>{receivedQuantity} / {plannedQty}</strong>
+            Received / Đã nhập kho: <strong>{receivedQuantity} / {totalConfirmedQty}</strong>
+            <span style={{ opacity: 0.7 }}> (confirmed / đã xác nhận)</span>
             {grComplete && ' — Complete / Hoàn tất'}
           </div>
         )}
@@ -358,9 +409,9 @@ function DatBikeLogTab() {
               onKeyDown={handleSerialKeyDown}
               style={inputStyle}
               placeholder="Scan or type serial number, press Enter to add / Quét hoặc nhập số serial, nhấn Enter để thêm"
-              disabled={grComplete}
+              disabled={scanLimitReached}
             />
-            <button type="button" onClick={addSerial} style={grComplete ? { ...secondaryBtnStyle, opacity: 0.5, cursor: 'not-allowed' } : secondaryBtnStyle} disabled={grComplete}>Add / Thêm</button>
+            <button type="button" onClick={addSerial} style={scanLimitReached ? { ...secondaryBtnStyle, opacity: 0.5, cursor: 'not-allowed' } : secondaryBtnStyle} disabled={scanLimitReached}>Add / Thêm</button>
           </div>
         </div>
         {serials.length > 0 && (
@@ -379,6 +430,32 @@ function DatBikeLogTab() {
           </div>
         )}
       </div>
+
+      {qtyWarning && (
+        <div style={modalOverlayStyle} onClick={() => setQtyWarning(null)}>
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={modalHeaderStyle}>
+              <span style={modalIconStyle}>!</span>
+              <span style={modalTitleStyle}>Quantity Exceeded / Vượt quá số lượng</span>
+            </div>
+            <div style={modalBodyStyle}>
+              <p style={modalTextStyle}>
+                Total confirmed quantity would be <strong>{qtyWarning.newTotal}</strong>, which exceeds
+                the order quantity (<strong>{qtyWarning.planned}</strong>). This confirmation is not allowed.
+              </p>
+              <p style={modalTextViStyle}>
+                Tổng SL đã xác nhận sẽ là <strong>{qtyWarning.newTotal}</strong>, vượt quá SL lệnh
+                (<strong>{qtyWarning.planned}</strong>). Không thể thực hiện xác nhận này.
+              </p>
+            </div>
+            <div style={modalFooterStyle}>
+              <button type="button" style={modalCancelBtnStyle} onClick={() => setQtyWarning(null)}>
+                Cancel / Hủy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -414,5 +491,36 @@ const textareaStyle = { padding: '8px 10px', borderRadius: '4px', border: '1px s
 const confirmTotalStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
 const grProgressStyle = { fontSize: '13px', color: '#6a6d70', backgroundColor: '#f3f4f5', borderRadius: '4px', padding: '6px 10px' };
 const grProgressDoneStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', fontWeight: '600' };
+
+// --- Quantity warning modal (branded, replaces browser confirm) ---
+const modalOverlayStyle = {
+  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+  backgroundColor: 'rgba(10, 10, 10, 0.55)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  padding: '16px', zIndex: 1000,
+};
+const modalCardStyle = {
+  width: '100%', maxWidth: '440px',
+  backgroundColor: '#fff', borderRadius: '8px', overflow: 'hidden',
+  boxShadow: '0 12px 40px rgba(0, 0, 0, 0.3)',
+};
+const modalHeaderStyle = {
+  display: 'flex', alignItems: 'center', gap: '10px',
+  padding: '14px 20px', backgroundColor: '#0A0A0A', borderBottom: '3px solid #EE6A1F',
+};
+const modalIconStyle = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  width: '26px', height: '26px', borderRadius: '50%',
+  backgroundColor: '#EE6A1F', color: '#fff', fontWeight: '800', fontSize: '16px', flexShrink: 0,
+};
+const modalTitleStyle = { color: '#fff', fontSize: '15px', fontWeight: '700' };
+const modalBodyStyle = { padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '10px' };
+const modalTextStyle = { margin: 0, fontSize: '14px', color: '#1A1A1A', lineHeight: 1.5 };
+const modalTextViStyle = { margin: 0, fontSize: '13px', color: '#6A6D70', lineHeight: 1.5 };
+const modalFooterStyle = { display: 'flex', justifyContent: 'flex-end', padding: '0 20px 18px' };
+const modalCancelBtnStyle = {
+  padding: '9px 22px', border: '1px solid #EE6A1F', borderRadius: '4px',
+  backgroundColor: '#fff', color: '#EE6A1F', fontSize: '14px', fontWeight: '600', cursor: 'pointer',
+};
 
 export default DatBikeLogTab;

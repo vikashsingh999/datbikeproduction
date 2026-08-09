@@ -1,0 +1,17 @@
+# Dependencies
+/node_modules
+
+# Production build
+/build
+
+# Environment (contains config; keep out of version control)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Misc
+.DS_Store

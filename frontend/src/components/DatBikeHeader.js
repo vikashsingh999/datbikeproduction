@@ -19,7 +19,7 @@ function DatBikeHeader({ right = null }) {
             DAT<span style={{ color: colors.orange }}>.</span>BIKE
           </span>
           <span style={dividerStyle}>|</span>
-          <span style={appTitleStyle}>Production Log</span>
+          <span style={appTitleStyle}>Production Log — Quality</span>
         </div>
         <div style={rightStyle}>{right}</div>
       </div>
