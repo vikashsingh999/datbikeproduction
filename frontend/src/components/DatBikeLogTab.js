@@ -18,6 +18,10 @@ function DatBikeLogTab() {
   const [serialInput, setSerialInput] = useState('');
   const [serials, setSerials] = useState([]);
   const [receivedQuantity, setReceivedQuantity] = useState(0);
+  // Serials already received in SAP for this order when it was loaded. This is
+  // the part of the count that survives a page refresh; scans made in this
+  // session are counted on top of it via `serials`.
+  const [receivedBeforeSession, setReceivedBeforeSession] = useState(0);
   const [grStatus, setGrStatus] = useState({ loading: false, success: null, message: '' });
   // Serial numbers already received for this material in the last 2 months
   // (uppercased, from SAP) — used to block duplicates. null = not loaded yet.
@@ -94,6 +98,11 @@ function DatBikeLogTab() {
         if (qty) setYieldQuantity(qty);
         if (sl) setStorageLocation(sl);
         setReceivedQuantity(Number(rq) || 0);
+        setReceivedBeforeSession(Number(rq) || 0);
+        // Scans belong to the order they were made against — starting a new one
+        // must not carry them over into the new order's scan limit.
+        setSerials([]);
+        setGrStatus({ loading: false, success: null, message: '' });
         if (mat) fetchUsedSerials(mat);
 
         setOrderFetchStatus({ loading: false, error: '' });
@@ -179,16 +188,19 @@ function DatBikeLogTab() {
     }
     // Restrict serial scans to the confirmed yield quantity (not the planned
     // order quantity). Must confirm the operation first, then only that many
-    // serials may be scanned. serials.length counts in-flight GRs too, so a fast
-    // scanner can't slip past the limit.
+    // serials may be scanned. In-flight GRs are counted too, so a fast scanner
+    // can't slip past the limit.
     const confirmedYield = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
     if (!(confirmedYield > 0)) {
       setGrStatus({ loading: false, success: false, message: `Confirm the operation first — no confirmed quantity yet. / Hãy xác nhận công đoạn trước — chưa có SL đã xác nhận.` });
       setSerialInput('');
       return;
     }
-    if (serials.length >= confirmedYield) {
-      setGrStatus({ loading: false, success: false, message: `Cannot scan more than the confirmed quantity: ${serials.length}/${confirmedYield} serials. / Không thể quét vượt quá SL đã xác nhận: ${serials.length}/${confirmedYield} serial.` });
+    // Count the receipts SAP already holds for this order alongside this
+    // session's scans, so a page refresh cannot hand out a fresh set of slots.
+    const scannedTotal = receivedBeforeSession + serials.length;
+    if (scannedTotal >= confirmedYield) {
+      setGrStatus({ loading: false, success: false, message: `Cannot scan more than the confirmed quantity: ${scannedTotal}/${confirmedYield} serials. / Không thể quét vượt quá SL đã xác nhận: ${scannedTotal}/${confirmedYield} serial.` });
       setSerialInput('');
       return;
     }
@@ -271,7 +283,7 @@ function DatBikeLogTab() {
   const totalConfirmedQty = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
   // Serial scanning is capped by the confirmed yield, not the planned order quantity.
   const grComplete = totalConfirmedQty > 0 && receivedQuantity >= totalConfirmedQty;
-  const scanLimitReached = totalConfirmedQty > 0 && serials.length >= totalConfirmedQty;
+  const scanLimitReached = totalConfirmedQty > 0 && receivedBeforeSession + serials.length >= totalConfirmedQty;
 
   return (
     <div style={pageStyle}>

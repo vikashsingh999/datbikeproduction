@@ -67,26 +67,37 @@ function todayIso() {
 // receipt (movement type 101). Each GR posts one serial with QuantityInEntryUnit
 // '1', so we sum the received quantities to get the total already performed.
 async function countGoodsReceipts(orderId) {
+    // A_MaterialDocumentItem has no IsReversed/IsReversal fields (selecting them
+    // makes SAP answer 404, which used to look like "nothing received"). Cancelled
+    // receipts are flagged by GoodsMovementIsCancelled instead. An order with no
+    // documents returns 200 with an empty result set, so any error here is a real
+    // error and must propagate rather than be read as a count of zero.
     const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
         + `?$filter=ManufacturingOrder eq '${orderId}' and GoodsMovementType eq '101'`
-        + `&$select=QuantityInEntryUnit,IsReversed,IsReversal&$format=json`;
-    let response;
-    try {
-        response = await axios.get(url, {
-            auth: sapAuth,
-            headers: { 'Accept': 'application/json' },
-        });
-    } catch (error) {
-        // SAP returns 404 when no material documents match the filter — that just
-        // means nothing has been received yet, not a real error.
-        if (error.response?.status === 404) return 0;
-        throw error;
-    }
+        + `&$select=QuantityInEntryUnit,GoodsMovementIsCancelled&$format=json`;
+    const response = await axios.get(url, {
+        auth: sapAuth,
+        headers: { 'Accept': 'application/json' },
+    });
     const items = response.data?.d?.results || [];
-    // Ignore reversed/reversal items so cancelled receipts don't count.
     return items.reduce((sum, item) => {
-        if (item.IsReversed === true || item.IsReversal === true) return sum;
+        if (item.GoodsMovementIsCancelled === true) return sum; // reversed receipt
         const qty = parseFloat(item.QuantityInEntryUnit);
+        return sum + (Number.isFinite(qty) ? qty : 0);
+    }, 0);
+}
+
+// Total confirmed yield posted against an order, summed over every confirmation
+// (all operations). This is the ceiling for how many serials may be received.
+async function sumConfirmedYield(orderId) {
+    // An order with no confirmations returns 200 and an empty result set, so
+    // errors are real errors here too and are left to propagate.
+    const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_PROD_ORDER_CONFIRMATION_2_SRV/ProdnOrdConf2`
+        + `?$filter=OrderID eq '${orderId}'&$select=ConfirmationYieldQuantity&$format=json`;
+    const response = await axios.get(url, { auth: sapAuth, headers: { 'Accept': 'application/json' } });
+    const results = response.data?.d?.results || [];
+    return results.reduce((sum, conf) => {
+        const qty = parseFloat(conf.ConfirmationYieldQuantity);
         return sum + (Number.isFinite(qty) ? qty : 0);
     }, 0);
 }
@@ -119,6 +130,11 @@ app.post('/api/orders/details', async (req, res) => {
             return res.status(404).json({ error: `Order ${orderId} not found in SAP. Check the order number.` });
         }
 
+        // Serials already received for this order. Read from SAP (not kept in the
+        // browser) so reloading the page cannot reset the scan counter.
+        const receivedQuantity = await countGoodsReceipts(orderId);
+        console.log('SAP goods receipts already posted:', receivedQuantity);
+
         return res.status(200).json({
             success: true,
             orderDetails: {
@@ -127,6 +143,7 @@ app.post('/api/orders/details', async (req, res) => {
                 quantity: header.MfgOrderPlannedTotalQty || op.OpPlannedTotalQuantity || '',
                 storageLocation: header.StorageLocation || '',
                 workCenter: op.WorkCenter || '',
+                receivedQuantity,
             },
         });
     } catch (error) {
@@ -246,6 +263,21 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
         const { orderId, material, storageLocation, serialNumber } = req.body;
         if (!orderId || !material || !serialNumber) {
             return res.status(400).json({ error: 'Missing mandatory fields: orderId, material, serialNumber' });
+        }
+
+        // Hard limit, enforced here rather than only in the UI: the number of
+        // serials received for an order may never exceed its confirmed yield.
+        // Browser state resets on refresh, SAP's does not — so both numbers are
+        // read back from SAP immediately before every post.
+        const [confirmedYield, alreadyReceived] = await Promise.all([
+            sumConfirmedYield(orderId),
+            countGoodsReceipts(orderId),
+        ]);
+        if (!(confirmedYield > 0)) {
+            return res.status(409).json({ error: `Confirm the operation first — order ${orderId} has no confirmed quantity yet. / Hãy xác nhận công đoạn trước — lệnh ${orderId} chưa có SL đã xác nhận.` });
+        }
+        if (alreadyReceived >= confirmedYield) {
+            return res.status(409).json({ error: `Goods receipt already complete: ${alreadyReceived}/${confirmedYield} received for order ${orderId}. / Đã nhập kho đủ: ${alreadyReceived}/${confirmedYield} cho lệnh ${orderId}.` });
         }
 
         // Use confirmation service as CSRF token source (same as original n8n flow)
