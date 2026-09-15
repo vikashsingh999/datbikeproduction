@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
+import { noteActivity } from './session';
 
 // Firebase client config — NOT secret, safe to expose in the browser bundle.
 // Values come from environment variables (set in .env locally, in Vercel for prod).
@@ -21,6 +22,9 @@ export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 // Builds request headers including the current user's Firebase ID token,
 // which the backend verifies before talking to SAP.
 export async function authHeaders() {
+  // Every SAP call goes through here, so a camera scan that never touches the
+  // keyboard still registers as activity against the idle timeout.
+  noteActivity();
   const user = auth.currentUser;
   const token = user ? await user.getIdToken() : null;
   return {

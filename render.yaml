@@ -17,3 +17,8 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      # Cutover serials: material=serial, separated by ';'. Set in the dashboard.
+      # Unset = legacy serials are not blocked and the floor falls back to the
+      # lowest serial already received for the material.
+      - key: SERIAL_CUTOVER
+        sync: false

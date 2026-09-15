@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>Dat.Bike</title>
+  <!-- The same mark the app header carries: the bike glyph on Dat.Bike orange. -->
+  <circle cx="16" cy="16" r="16" fill="#EE6A1F"/>
+  <g transform="translate(16 16) scale(1.2) translate(-12 -13)"
+     fill="none" stroke="#0A0A0A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="6" cy="17" r="3.5"/>
+    <circle cx="18" cy="17" r="3.5"/>
+    <path d="M6 17l4-8h5l3 8M10 9l-1-3H7"/>
+  </g>
+</svg>

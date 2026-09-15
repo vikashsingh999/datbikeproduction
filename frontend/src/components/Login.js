@@ -1,22 +1,40 @@
 import React, { useState } from 'react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  setPersistence,
+  signInWithEmailAndPassword,
+} from 'firebase/auth';
 import { auth } from '../firebase';
 import DatBikeHeader from './DatBikeHeader';
 import { colors, fontFamily } from '../theme';
 import loginBg from '../assets/login-bg.png';
+import {
+  IDLE_LIMIT_MINUTES,
+  clearIdleSignOut,
+  rememberKeepSignedIn,
+  wasIdleSignOut,
+} from '../session';
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [keep, setKeep] = useState(false);
   const [loading, setLoading] = useState(false);
+  const idleNotice = wasIdleSignOut();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
+      // Local persistence outlives the browser; session persistence dies with
+      // the tab. Set before signing in so the credential lands in the right one.
+      await setPersistence(auth, keep ? browserLocalPersistence : browserSessionPersistence);
+      rememberKeepSignedIn(keep);
       await signInWithEmailAndPassword(auth, email.trim(), password);
+      clearIdleSignOut();
       // App.js auth listener swaps to the main view automatically.
     } catch (err) {
       const code = err.code || '';
@@ -38,6 +56,14 @@ function Login() {
         <form onSubmit={handleSubmit} style={cardStyle}>
           <div style={titleStyle}>Sign In / Đăng nhập</div>
           <div style={subtitleStyle}>Dat.Bike Production Log / Nhật ký sản xuất</div>
+
+          {idleNotice && (
+            <div style={noticeStyle}>
+              Signed out after {IDLE_LIMIT_MINUTES} minutes of inactivity.
+              <br />
+              Đã đăng xuất sau {IDLE_LIMIT_MINUTES} phút không hoạt động.
+            </div>
+          )}
 
           <div style={formGroup}>
             <label style={labelStyle}>Email</label>
@@ -63,6 +89,16 @@ function Login() {
               required
             />
           </div>
+
+          <label style={keepRowStyle}>
+            <input
+              type="checkbox"
+              checked={keep}
+              onChange={(e) => setKeep(e.target.checked)}
+              style={checkboxStyle}
+            />
+            <span>Keep me signed in / Duy trì đăng nhập</span>
+          </label>
 
           {error && <div style={errorTextStyle}>{error}</div>}
 
@@ -109,5 +145,24 @@ const labelStyle = { fontWeight: '600', fontSize: '13px', color: colors.textMute
 const inputStyle = { padding: '10px', borderRadius: '4px', border: '1px solid #89919a', fontSize: '14px', color: colors.textDark, backgroundColor: '#fff' };
 const btnStyle = { padding: '11px', border: 'none', borderRadius: '4px', backgroundColor: colors.orange, color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', marginTop: '4px' };
 const errorTextStyle = { color: colors.errorText, fontSize: '13px' };
+const noticeStyle = {
+  padding: '9px 11px',
+  borderRadius: '4px',
+  borderLeft: `3px solid ${colors.orange}`,
+  backgroundColor: '#fdf1e9',
+  color: colors.textDark,
+  fontSize: '12.5px',
+  lineHeight: '1.5',
+};
+const keepRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  fontSize: '13px',
+  color: colors.textMuted,
+  cursor: 'pointer',
+  userSelect: 'none',
+};
+const checkboxStyle = { width: '15px', height: '15px', accentColor: colors.orange, cursor: 'pointer' };
 
 export default Login;

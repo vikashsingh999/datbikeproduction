@@ -63,28 +63,45 @@ function todayIso() {
     return new Date().toISOString().split('T')[0] + 'T00:00:00';
 }
 
-// Count how many units have already been received against an order via goods
-// receipt (movement type 101). Each GR posts one serial with QuantityInEntryUnit
-// '1', so we sum the received quantities to get the total already performed.
-async function countGoodsReceipts(orderId) {
-    // A_MaterialDocumentItem has no IsReversed/IsReversal fields (selecting them
-    // makes SAP answer 404, which used to look like "nothing received"). Cancelled
-    // receipts are flagged by GoodsMovementIsCancelled instead. An order with no
-    // documents returns 200 with an empty result set, so any error here is a real
-    // error and must propagate rather than be read as a count of zero.
-    const url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
-        + `?$filter=ManufacturingOrder eq '${orderId}' and GoodsMovementType eq '101'`
-        + `&$select=QuantityInEntryUnit,GoodsMovementIsCancelled&$format=json`;
-    const response = await axios.get(url, {
-        auth: sapAuth,
-        headers: { 'Accept': 'application/json' },
-    });
-    const items = response.data?.d?.results || [];
-    return items.reduce((sum, item) => {
-        if (item.GoodsMovementIsCancelled === true) return sum; // reversed receipt
-        const qty = parseFloat(item.QuantityInEntryUnit);
-        return sum + (Number.isFinite(qty) ? qty : 0);
-    }, 0);
+// Everything already received against an order by goods receipt (movement type
+// 101): the total quantity, and every serial value that came with it.
+//
+// Both come from one query. A_MaterialDocumentItem has no IsReversed/IsReversal
+// fields (selecting them makes SAP answer 404, which used to look like "nothing
+// received"); cancelled receipts are flagged by GoodsMovementIsCancelled instead.
+// No $select at all, because it drops the expanded navigations. An order with no
+// documents returns 200 with an empty result set, so any error here is a real
+// error and must propagate rather than be read as a count of zero.
+//
+// The scanned value is written to BOTH the document header text and the item's
+// serial numbers. Serial-managed materials populate to_SerialNumbers; materials
+// that are not serial-managed (the battery packs) keep it only in the header
+// text, so both sources are collected.
+async function fetchOrderReceipts(orderId) {
+    const filter = `ManufacturingOrder eq '${orderId}' and GoodsMovementType eq '101'`;
+    // Encode spaces only - percent-encoding the '/' in a nav path makes SAP
+    // silently return an empty set.
+    let url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
+        + `?$filter=${filter.replace(/ /g, '%20')}`
+        + `&$expand=to_SerialNumbers,to_MaterialDocumentHeader&$format=json&$top=500`;
+
+    let received = 0;
+    const serials = [];
+    for (let page = 0; page < 100 && url; page++) {
+        const response = await axios.get(url, { auth: sapAuth, headers: { 'Accept': 'application/json' } });
+        for (const item of (response.data?.d?.results || [])) {
+            if (item.GoodsMovementIsCancelled === true) continue; // reversed receipt
+            const qty = parseFloat(item.QuantityInEntryUnit);
+            if (Number.isFinite(qty)) received += qty;
+            const headerText = item.to_MaterialDocumentHeader?.MaterialDocumentHeaderText;
+            if (headerText && String(headerText).trim()) serials.push(String(headerText).trim());
+            for (const serial of (item.to_SerialNumbers?.results || [])) {
+                if (serial?.SerialNumber) serials.push(String(serial.SerialNumber).trim());
+            }
+        }
+        url = response.data?.d?.__next || null;
+    }
+    return { received, serials };
 }
 
 // Total confirmed yield posted against an order, summed over every confirmation
@@ -100,6 +117,210 @@ async function sumConfirmedYield(orderId) {
         const qty = parseFloat(conf.ConfirmationYieldQuantity);
         return sum + (Number.isFinite(qty) ? qty : 0);
     }, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Cutover serial numbers
+//
+// Serials are issued per production month as `MO-YYYYMM NNNNN` (e.g.
+// `MO-202609 45678`). Packs built before the cutover were backflushed by the old
+// process, and when one of them comes back for rework an operator can scan it
+// again — receiving it a second time and writing a stale serial into the
+// material document header text. The duplicate check does not catch those,
+// because the original receipt was never posted through this app (and may be
+// outside the duplicate look-back window).
+//
+// So: for a material with a cutover configured, only serials issued AFTER the
+// cutover serial may be received. The cutover serial itself is the last one used
+// before the switch, so it is excluded too.
+//
+// Configure via the SERIAL_CUTOVER env var, `material=serial` separated by `;`.
+// `*` sets a default for every material not listed:
+//     SERIAL_CUTOVER=221000022=MO-202609 45678;201000021=MO-202609 12000
+// Leave it unset and nothing is enforced (current behaviour).
+// ---------------------------------------------------------------------------
+
+// Accepts MO-202609 45678, MO-202609-45678, MO20260945678 — the separators vary
+// between scanners and hand-typed entries, the two numbers do not.
+function parseMoSerial(value) {
+    const match = /^MO[\s-]*(\d{6})[\s-]*(\d{1,12})$/.exec(String(value || '').trim().toUpperCase());
+    if (!match) return null;
+    const period = Number(match[1]); // YYYYMM
+    const month = period % 100;
+    if (month < 1 || month > 12) return null;
+    return { period, sequence: Number(match[2]) };
+}
+
+// Serial ordering: production month first, then the sequence within that month.
+// Compared numerically, so a shorter sequence (9999) still sorts below a longer
+// one (45678) — a plain string comparison would get that wrong.
+function isSerialAfter(candidate, cutover) {
+    if (candidate.period !== cutover.period) return candidate.period > cutover.period;
+    return candidate.sequence > cutover.sequence;
+}
+
+function parseCutoverConfig(raw) {
+    const map = new Map();
+    for (const entry of String(raw || '').split(';')) {
+        const text = entry.trim();
+        if (!text) continue;
+        const at = text.indexOf('=');
+        if (at < 0) {
+            console.warn(`WARNING: SERIAL_CUTOVER entry "${text}" is not material=serial — ignored.`);
+            continue;
+        }
+        const material = text.slice(0, at).trim();
+        const serial = text.slice(at + 1).trim();
+        const parsed = parseMoSerial(serial);
+        if (!material || !parsed) {
+            console.warn(`WARNING: SERIAL_CUTOVER entry "${text}" has no usable MO-YYYYMM NNNNN serial — ignored.`);
+            continue;
+        }
+        map.set(material, { raw: serial, parsed });
+    }
+    return map;
+}
+
+const SERIAL_CUTOVERS = parseCutoverConfig(process.env.SERIAL_CUTOVER);
+if (SERIAL_CUTOVERS.size === 0) {
+    console.log('SERIAL_CUTOVER not configured — legacy serials are not blocked.');
+} else {
+    for (const [material, { raw }] of SERIAL_CUTOVERS) {
+        console.log(`Serial cutover for material ${material}: receiving only serials after ${raw}`);
+    }
+}
+
+// The floor an order's serials sit above: the lowest serial it has already
+// received. The first serial scanned sets it, and it never moves, because no
+// serial below it can be received afterwards. Null when the order has nothing
+// that reads as MO-YYYYMM NNNNN.
+//
+// Values not in that pattern (a VIN, a document header note such as "GR") are
+// ignored rather than blocking the order, which keeps lines that do not use
+// MO- serials out of this rule.
+function orderSerialFloor(serials) {
+    let floor = null;
+    for (const value of serials || []) {
+        const parsed = parseMoSerial(value);
+        if (!parsed) continue;
+        if (!floor || isSerialAfter(floor.parsed, parsed)) floor = { raw: String(value).trim(), parsed };
+    }
+    return floor;
+}
+
+// The floor that applies to a scan. One floor per material, and it never climbs.
+//
+// It cannot be tied to an order, and it cannot follow the most recent scanning.
+// IT's case: the line ends a day at 46500, starts the next day at 46503, then
+// comes back for 46502 and 46501 - packs pulled for a leak test or a fault, days
+// later, possibly on a different order. Those must go through. Only serials from
+// before the line's floor - 45899 against a floor of 45900 - must not.
+//
+// So: the lowest serial received for the material is the floor, and a receipt can
+// only ever confirm it, never raise it. Where SERIAL_CUTOVER names a floor for the
+// material that value wins outright, which is what makes it exact rather than
+// whatever the receipt history happens to hold (checkSerialCutover enforces it,
+// and it is also the way to sit above test data left in a system).
+//
+// Returns { raw, parsed } or null when nothing comparable has been received yet.
+function effectiveSerialFloor(orderSerials, materialFloor) {
+    // The order's own receipts are not date-filtered, so they count even if they
+    // fall outside the material look-back window.
+    const own = orderSerialFloor(orderSerials);
+    if (!materialFloor) return own;
+    if (!own) return materialFloor;
+    return isSerialAfter(own.parsed, materialFloor.parsed) ? materialFloor : own;
+}
+
+// A serial must sit above the floor. Anything below it came off the line before
+// this order's range started, so it is a pack being received a second time.
+//
+// Deliberately NOT a running sequence check: the line scans out of order all the
+// time - a pack pulled for a leak test or a fault rejoins the run later - so
+// 45455 then 45454 is normal and allowed. Only going below the floor is refused.
+// Returns null when the scan is fine, otherwise a bilingual message.
+//
+// Only applies when the scanned serial is in the MO-YYYYMM NNNNN pattern - there
+// is no meaningful order between two VINs.
+function checkSerialAboveFloor(serialNumber, floor) {
+    const value = String(serialNumber || '').trim();
+    const parsed = parseMoSerial(value);
+    if (!parsed) return null; // not an MO- serial: the cutover rule handles the rest
+    if (!floor) return null;  // nothing comparable received for this material yet
+    if (isSerialAfter(parsed, floor.parsed)) return null;
+    return `Serial ${value} is below ${floor.raw}, the lowest serial received for this material. / Serial ${value} thấp hơn ${floor.raw}, serial thấp nhất đã nhập kho cho vật tư này.`;
+}
+
+function cutoverForMaterial(material) {
+    return SERIAL_CUTOVERS.get(String(material || '').trim()) || SERIAL_CUTOVERS.get('*') || null;
+}
+
+// Returns null when the serial may be received, otherwise a bilingual message.
+function checkSerialCutover(material, serialNumber) {
+    const cutover = cutoverForMaterial(material);
+    if (!cutover) return null; // no cutover for this material -> nothing to enforce
+    const value = String(serialNumber || '').trim();
+    const parsed = parseMoSerial(value);
+    if (!parsed) {
+        return `Serial ${value} is not in the current format (MO-YYYYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYYYMM NNNNN), không thể nhập kho.`;
+    }
+    if (!isSerialAfter(parsed, cutover.parsed)) {
+        return `Legacy serial ${value}: only serials issued after ${cutover.raw} can be received. / Serial cũ ${value}: chỉ nhận serial phát hành sau ${cutover.raw}.`;
+    }
+    return null;
+}
+
+// How far back to look for other orders when working out a material's floor.
+// Longer than the duplicate window, which only has to cover recent rescans: this
+// one has to reach the previous order for the material, which on a slow-moving
+// material can be months old.
+const SERIAL_FLOOR_MONTHS = Number(process.env.SERIAL_FLOOR_MONTHS) > 0 ? Number(process.env.SERIAL_FLOOR_MONTHS) : 6;
+
+// Lowest serial received for a material across every order: {raw, parsed} or null.
+// Same query shape as the duplicate check - encode spaces only, no $select, or
+// the expanded navigations come back empty.
+async function fetchMaterialSerialFloor(material, months = SERIAL_FLOOR_MONTHS) {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - months);
+    cutoff.setHours(0, 0, 0, 0);
+    const since = cutoff.toISOString().split('.')[0];
+
+    const filter = `Material eq '${material}' and GoodsMovementType eq '101'`
+        + ` and to_MaterialDocumentHeader/PostingDate ge datetime'${since}'`;
+    let url = `${SAP_BASE_URL}/sap/opu/odata/sap/API_MATERIAL_DOCUMENT_SRV/A_MaterialDocumentItem`
+        + `?$filter=${filter.replace(/ /g, '%20')}`
+        + `&$expand=to_SerialNumbers,to_MaterialDocumentHeader&$format=json&$top=500`;
+
+    const values = [];
+    for (let page = 0; page < 100 && url; page++) {
+        const response = await axios.get(url, { auth: sapAuth, headers: { 'Accept': 'application/json' } });
+        for (const item of (response.data?.d?.results || [])) {
+            if (item.GoodsMovementIsCancelled === true) continue;
+            const headerText = item.to_MaterialDocumentHeader?.MaterialDocumentHeaderText;
+            if (headerText && String(headerText).trim()) values.push(String(headerText).trim());
+            for (const serial of (item.to_SerialNumbers?.results || [])) {
+                if (serial?.SerialNumber) values.push(String(serial.SerialNumber).trim());
+            }
+        }
+        url = response.data?.d?.__next || null;
+    }
+    return orderSerialFloor(values);
+}
+
+// One scan should not pay for a material-wide read every time. The floor never
+// rises, so a stale cache cannot refuse a scan it should have allowed, and a
+// successful receipt drops the entry so the next scan sees fresh data.
+const FLOOR_CACHE_MS = 60000;
+const materialFloorCache = new Map();
+
+async function getMaterialSerialFloor(material) {
+    const key = String(material || '').trim();
+    if (!key) return null;
+    const hit = materialFloorCache.get(key);
+    if (hit && Date.now() - hit.at < FLOOR_CACHE_MS) return hit.floor;
+    const floor = await fetchMaterialSerialFloor(key);
+    materialFloorCache.set(key, { at: Date.now(), floor });
+    return floor;
 }
 
 // Endpoint 0: Fetch Order Details
@@ -131,9 +352,23 @@ app.post('/api/orders/details', async (req, res) => {
         }
 
         // Serials already received for this order. Read from SAP (not kept in the
-        // browser) so reloading the page cannot reset the scan counter.
-        const receivedQuantity = await countGoodsReceipts(orderId);
-        console.log('SAP goods receipts already posted:', receivedQuantity);
+        // browser) so reloading the page cannot reset the scan counter, and the
+        // highest serial so far so the UI can refuse a lower one straight away.
+        const [{ received: receivedQuantity, serials: receivedSerials }, materialFloor] = await Promise.all([
+            fetchOrderReceipts(orderId),
+            // Only powers the warning shown before scanning; the goods-receipt
+            // endpoint reads it again and refuses the post if it cannot.
+            getMaterialSerialFloor(header.Material).catch((err) => {
+                console.warn('Could not read the material serial floor:', err.message);
+                return null;
+            }),
+        ]);
+        // A configured cutover is the exact floor for the material; otherwise fall
+        // back to the lowest serial the receipt history holds.
+        const configured = cutoverForMaterial(header.Material);
+        const serialFloor = configured || effectiveSerialFloor(receivedSerials, materialFloor);
+        console.log('SAP goods receipts already posted:', receivedQuantity,
+            '| serial floor:', serialFloor ? `${serialFloor.raw}${configured ? ' (SERIAL_CUTOVER)' : ' (lowest received)'}` : '(none)');
 
         return res.status(200).json({
             success: true,
@@ -144,6 +379,9 @@ app.post('/api/orders/details', async (req, res) => {
                 storageLocation: header.StorageLocation || '',
                 workCenter: op.WorkCenter || '',
                 receivedQuantity,
+                serialCutover: cutoverForMaterial(header.Material)?.raw || '',
+                serialFloor: serialFloor?.raw || '',
+                serialFloorIsCutover: Boolean(configured),
             },
         });
     } catch (error) {
@@ -265,19 +503,46 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             return res.status(400).json({ error: 'Missing mandatory fields: orderId, material, serialNumber' });
         }
 
+        // Legacy serials from before the cutover must not be received again (a
+        // reworked pack coming back through the line would otherwise post a stale
+        // serial into the document header text).
+        const cutoverError = checkSerialCutover(material, serialNumber);
+        if (cutoverError) {
+            return res.status(409).json({ error: cutoverError });
+        }
+
         // Hard limit, enforced here rather than only in the UI: the number of
         // serials received for an order may never exceed its confirmed yield.
         // Browser state resets on refresh, SAP's does not — so both numbers are
         // read back from SAP immediately before every post.
-        const [confirmedYield, alreadyReceived] = await Promise.all([
+        const [confirmedYield, receipts, materialFloor] = await Promise.all([
             sumConfirmedYield(orderId),
-            countGoodsReceipts(orderId),
+            fetchOrderReceipts(orderId),
+            // Skip the read when SERIAL_CUTOVER already fixes the floor for this
+            // material - checkSerialCutover above has enforced it.
+            cutoverForMaterial(material) ? null : getMaterialSerialFloor(material),
         ]);
+        const alreadyReceived = receipts.received;
         if (!(confirmedYield > 0)) {
             return res.status(409).json({ error: `Confirm the operation first — order ${orderId} has no confirmed quantity yet. / Hãy xác nhận công đoạn trước — lệnh ${orderId} chưa có SL đã xác nhận.` });
         }
         if (alreadyReceived >= confirmedYield) {
             return res.status(409).json({ error: `Goods receipt already complete: ${alreadyReceived}/${confirmedYield} received for order ${orderId}. / Đã nhập kho đủ: ${alreadyReceived}/${confirmedYield} cho lệnh ${orderId}.` });
+        }
+
+        // A serial below the material's floor belongs to a pack built before the
+        // line reached that point. Scanning above the floor out of sequence, days
+        // later, on any order, is normal work and stays allowed.
+        //
+        // Only when SERIAL_CUTOVER does not already fix the floor: with a cutover
+        // configured, checkSerialCutover above is the whole rule. Falling through
+        // to here would measure against this order's own lowest serial and refuse
+        // a pack the line legitimately comes back to later in the run.
+        if (!cutoverForMaterial(material)) {
+            const floorError = checkSerialAboveFloor(serialNumber, effectiveSerialFloor(receipts.serials, materialFloor));
+            if (floorError) {
+                return res.status(409).json({ error: floorError });
+            }
         }
 
         // Use confirmation service as CSRF token source (same as original n8n flow)
@@ -321,12 +586,8 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             },
         });
 
-
-      
-
-
+        materialFloorCache.delete(String(material || '').trim()); // this receipt may raise the floor
         return res.status(200).json({ success: true, sapResponse: sapResponse.data });
-
     } catch (error) {
         console.error('Error posting GR to SAP:', error.message);
         const sapMessage = error.response?.data?.error?.message?.value

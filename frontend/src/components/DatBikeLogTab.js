@@ -2,6 +2,38 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { API_URL, authHeaders } from '../firebase';
 
+// Serials are issued per production month as `MO-YYYYMM NNNNN`. Separators vary
+// between scanners and hand-typed entries (`MO-202609 45678`, `MO-202609-45678`,
+// `MO20260945678`), the two numbers do not.
+function parseMoSerial(value) {
+  const match = /^MO[\s-]*(\d{6})[\s-]*(\d{1,12})$/.exec(String(value || '').trim().toUpperCase());
+  if (!match) return null;
+  const period = Number(match[1]); // YYYYMM
+  const month = period % 100;
+  if (month < 1 || month > 12) return null;
+  return { period, sequence: Number(match[2]) };
+}
+
+// Month first, then the sequence inside that month, both numeric — a string
+// comparison would rank a short sequence (9999) above a longer one (45678).
+function isSerialAfter(candidate, cutover) {
+  if (candidate.period !== cutover.period) return candidate.period > cutover.period;
+  return candidate.sequence > cutover.sequence;
+}
+
+// Lowest serial in a list - the floor an order's serials sit above. Anything not
+// in the MO- pattern (a VIN, a header note) is ignored, so lines that do not use
+// MO- serials are left alone.
+function lowestMoSerial(values) {
+  let floor = null;
+  for (const value of values || []) {
+    const parsed = parseMoSerial(value);
+    if (!parsed) continue;
+    if (!floor || isSerialAfter(floor.parsed, parsed)) floor = { raw: String(value).trim(), parsed };
+  }
+  return floor;
+}
+
 function DatBikeLogTab() {
   const [order, setOrder] = useState('');
   const [orderDetails, setOrderDetails] = useState(null);
@@ -22,6 +54,18 @@ function DatBikeLogTab() {
   // the part of the count that survives a page refresh; scans made in this
   // session are counted on top of it via `serials`.
   const [receivedBeforeSession, setReceivedBeforeSession] = useState(0);
+  // Last serial used before the cutover, for this order's material ('' = no
+  // cutover configured). Only serials issued after it may be received, which
+  // stops a reworked legacy pack from being backflushed a second time.
+  const [serialCutover, setSerialCutover] = useState('');
+  // Lowest serial allowed for this material ('' = none): the configured cutover,
+  // or the lowest one already received. It never rises, so packs scanned out of
+  // sequence days later still go through, while anything from before it does not.
+  const [serialFloor, setSerialFloor] = useState('');
+  const [serialFloorIsCutover, setSerialFloorIsCutover] = useState(false);
+  // Serials whose goods receipt came back successful. SAP holds these, so they
+  // set the floor and cannot be taken back off the list here.
+  const [postedSerials, setPostedSerials] = useState([]);
   const [grStatus, setGrStatus] = useState({ loading: false, success: null, message: '' });
   // Serial numbers already received for this material in the last 2 months
   // (uppercased, from SAP) — used to block duplicates. null = not loaded yet.
@@ -91,7 +135,7 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok && data.orderDetails) {
-        const { material: mat, operation: op, quantity: qty, storageLocation: sl, receivedQuantity: rq } = data.orderDetails;
+        const { material: mat, operation: op, quantity: qty, storageLocation: sl, receivedQuantity: rq, serialCutover: cutover, serialFloor: floor, serialFloorIsCutover: floorIsCutover } = data.orderDetails;
         setOrderDetails(data.orderDetails);
         if (mat) setMaterial(mat);
         if (op) setOperation(op);
@@ -99,6 +143,10 @@ function DatBikeLogTab() {
         if (sl) setStorageLocation(sl);
         setReceivedQuantity(Number(rq) || 0);
         setReceivedBeforeSession(Number(rq) || 0);
+        setSerialCutover(cutover || '');
+        setSerialFloor(floor || '');
+        setSerialFloorIsCutover(Boolean(floorIsCutover));
+        setPostedSerials([]);
         // Scans belong to the order they were made against — starting a new one
         // must not carry them over into the new order's scan limit.
         setSerials([]);
@@ -186,6 +234,29 @@ function DatBikeLogTab() {
       setGrStatus({ loading: false, success: false, message: `Duplicate serial number: ${value} already exists for this material. Cannot continue. / Số serial trùng lặp: ${value} đã tồn tại cho vật tư này. Không thể tiếp tục.` });
       return;
     }
+    // Cutover guard: a pack built before the cutover was already backflushed by
+    // the old process, so scanning it again (rework coming back down the line)
+    // would receive it twice and write a stale serial to the document header.
+    const cutoverParsed = serialCutover ? parseMoSerial(serialCutover) : null;
+    if (cutoverParsed) {
+      const parsed = parseMoSerial(value);
+      if (!parsed) {
+        setGrStatus({ loading: false, success: false, message: `Serial ${value} is not in the current format (MO-YYYYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYYYMM NNNNN), không thể nhập kho.` });
+        return;
+      }
+      if (!isSerialAfter(parsed, cutoverParsed)) {
+        setGrStatus({ loading: false, success: false, message: `Legacy serial ${value}: only serials issued after ${serialCutover} can be received. / Serial cũ ${value}: chỉ nhận serial phát hành sau ${serialCutover}.` });
+        return;
+      }
+    }
+    // Every serial must sit above the material's floor. Above it, scanning out of
+    // sequence - days later, on another order - is normal work and stays allowed.
+    const floor = effectiveFloor;
+    const scanned = parseMoSerial(value);
+    if (scanned && floor && !isSerialAfter(scanned, floor.parsed)) {
+      setGrStatus({ loading: false, success: false, message: `Serial ${value} is below ${floor.raw}, the lowest serial allowed for this material. / Serial ${value} thấp hơn ${floor.raw}, serial thấp nhất được phép cho vật tư này.` });
+      return;
+    }
     // Restrict serial scans to the confirmed yield quantity (not the planned
     // order quantity). Must confirm the operation first, then only that many
     // serials may be scanned. In-flight GRs are counted too, so a fast scanner
@@ -222,6 +293,7 @@ function DatBikeLogTab() {
       const data = await response.json();
       if (response.ok) {
         setReceivedQuantity((prev) => prev + 1);
+        setPostedSerials((prev) => [...prev, value]);
         setUsedSerials((prev) => new Set(prev || []).add(normalized));
         setGrStatus({ loading: false, success: true, message: `GR posted for serial ${value} / Đã nhập kho cho serial ${value}` });
       } else {
@@ -240,6 +312,7 @@ function DatBikeLogTab() {
   };
 
   const removeSerial = (value) => {
+    if (postedSerials.includes(value)) return; // already in SAP, not ours to undo
     setSerials(serials.filter((s) => s !== value));
   };
 
@@ -278,6 +351,14 @@ function DatBikeLogTab() {
   };
 
 
+  // The floor in force. It never rises, so it is the lowest serial known for this
+  // material: what SAP already held when the order was loaded, plus anything
+  // received in this session. Same rule the server applies, so the screen never
+  // accepts a scan the post would refuse.
+  const effectiveFloor = serialFloorIsCutover
+    ? lowestMoSerial([serialFloor])                      // configured, fixed
+    : lowestMoSerial([serialFloor, ...postedSerials]);
+
   const plannedQty = parseFloat(orderDetails?.quantity);
   const hasPlannedQty = Number.isFinite(plannedQty) && plannedQty > 0;
   const totalConfirmedQty = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
@@ -296,7 +377,7 @@ function DatBikeLogTab() {
               ref={orderInputRef}
               type="text"
               value={order}
-              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); setReceivedQuantity(0); setUsedSerials(null); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
+              onChange={(e) => { setOrder(e.target.value); setOrderDetails(null); setOrderFetchStatus({ loading: false, error: '' }); setConfirmations([]); setConfirmStatus({ loading: false, success: null, message: '' }); setGrStatus({ loading: false, success: null, message: '' }); setSerials([]); setPostedSerials([]); setReceivedQuantity(0); setReceivedBeforeSession(0); setSerialFloor(''); setSerialFloorIsCutover(false); setSerialCutover(''); setUsedSerials(null); lastFetchedOrderRef.current = ''; lastFetchedConfirmRef.current = ''; }}
               onKeyDown={handleOrderKeyDown}
               onBlur={handleOrderBlur}
               style={inputStyle}
@@ -403,6 +484,18 @@ function DatBikeLogTab() {
 
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number<span style={sectionTitleViStyle}>Nhập kho theo số Serial</span></div>
+        {serialCutover && (
+          <div style={cutoverNoteStyle}>
+            Serials after <strong>{serialCutover}</strong> only — legacy serials are rejected.
+            <span style={{ opacity: 0.75 }}> / Chỉ serial sau {serialCutover} — serial cũ sẽ bị từ chối.</span>
+          </div>
+        )}
+        {effectiveFloor && !serialCutover && (
+          <div style={cutoverNoteStyle}>
+            Scans must be above <strong>{effectiveFloor.raw}</strong> — in any order, on any day.
+            <span style={{ opacity: 0.75 }}> / Chỉ nhận serial lớn hơn, không cần theo thứ tự.</span>
+          </div>
+        )}
         {totalConfirmedQty > 0 && (
           <div style={grComplete ? grProgressDoneStyle : grProgressStyle}>
             Received / Đã nhập kho: <strong>{receivedQuantity} / {totalConfirmedQty}</strong>
@@ -429,9 +522,11 @@ function DatBikeLogTab() {
         {serials.length > 0 && (
           <div style={chipListStyle}>
             {serials.map((s) => (
-              <span key={s} style={chipStyle}>
+              <span key={s} style={postedSerials.includes(s) ? { ...chipStyle, ...chipPostedStyle } : chipStyle}>
                 {s}
-                <button type="button" onClick={() => removeSerial(s)} style={chipRemoveStyle}>x</button>
+                {postedSerials.includes(s)
+                  ? <span style={chipDoneStyle} title="Received in SAP / Đã nhập kho">✓</span>
+                  : <button type="button" onClick={() => removeSerial(s)} style={chipRemoveStyle}>x</button>}
               </span>
             ))}
           </div>
@@ -503,6 +598,9 @@ const textareaStyle = { padding: '8px 10px', borderRadius: '4px', border: '1px s
 const confirmTotalStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
 const grProgressStyle = { fontSize: '13px', color: '#6a6d70', backgroundColor: '#f3f4f5', borderRadius: '4px', padding: '6px 10px' };
 const grProgressDoneStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', fontWeight: '600' };
+const chipPostedStyle = { backgroundColor: '#e2f0d9', borderColor: '#a9c48f', color: '#385723' };
+const chipDoneStyle = { marginLeft: '6px', fontWeight: '700', cursor: 'default' };
+const cutoverNoteStyle = { fontSize: '13px', color: '#8a5a00', backgroundColor: '#fff4e0', border: '1px solid #f0c987', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
 
 // --- Quantity warning modal (branded, replaces browser confirm) ---
 const modalOverlayStyle = {
