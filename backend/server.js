@@ -140,15 +140,44 @@ async function sumConfirmedYield(orderId) {
 // Leave it unset and nothing is enforced (current behaviour).
 // ---------------------------------------------------------------------------
 
-// Accepts MO-202609 45678, MO-202609-45678, MO20260945678 — the separators vary
-// between scanners and hand-typed entries, the two numbers do not.
+// Accepts MO-2609 44290, MO-202609 44200, MO-202609-44200, MO20260944200 — the
+// labels on the line write the production month with a two-digit year, the
+// cutover values handed over by the team use four, and separators vary between
+// scanners and hand-typed entries. Every spelling of the same serial has to read
+// alike, so the month is normalised to YYYYMM.
 function parseMoSerial(value) {
-    const match = /^MO[\s-]*(\d{6})[\s-]*(\d{1,12})$/.exec(String(value || '').trim().toUpperCase());
-    if (!match) return null;
-    const period = Number(match[1]); // YYYYMM
-    const month = period % 100;
+    const text = String(value || '').trim().toUpperCase();
+    // A separator between the month and the sequence settles the split outright.
+    const separated = /^MO[\s-]*(\d{4}|\d{6})[\s-]+(\d{1,12})$/.exec(text);
+    if (separated) return buildMoSerial(separated[1], separated[2]);
+    // Run together there is nothing to split on, so take whichever leading width
+    // gives a real month: MO260944290 is 2609 + 44290, MO20260944200 is 202609 +
+    // 44200, and the wrong reading of either lands outside the 2000-2099 range.
+    const joined = /^MO[\s-]*(\d{5,18})$/.exec(text);
+    if (!joined) return null;
+    const digits = joined[1];
+    return buildMoSerial(digits.slice(0, 6), digits.slice(6))
+        || buildMoSerial(digits.slice(0, 4), digits.slice(4));
+}
+
+// A month block (YYMM or YYYYMM) plus a sequence, or null when that is not a real
+// month. A two-digit year means 20YY, which is what the labels intend.
+function buildMoSerial(monthDigits, sequenceDigits) {
+    if (!/^(\d{4}|\d{6})$/.test(monthDigits)) return null;
+    if (!/^\d{1,12}$/.test(sequenceDigits)) return null;
+    const year = monthDigits.length === 6
+        ? Number(monthDigits.slice(0, 4))
+        : 2000 + Number(monthDigits.slice(0, 2));
+    const month = Number(monthDigits.slice(-2));
     if (month < 1 || month > 12) return null;
-    return { period, sequence: Number(match[2]) };
+    if (year < 2000 || year > 2099) return null;
+    return { period: year * 100 + month, sequence: Number(sequenceDigits) };
+}
+
+// Does this read as an MO- serial at all? Everything else belongs to the older
+// numbering, which carries no month to compare and is left alone.
+function isMoSerial(value) {
+    return /^MO[\s-]*\d/.test(String(value || '').trim().toUpperCase());
 }
 
 // Serial ordering: production month first, then the sequence within that month.
@@ -260,9 +289,12 @@ function checkSerialCutover(material, serialNumber) {
     const cutover = cutoverForMaterial(material);
     if (!cutover) return null; // no cutover for this material -> nothing to enforce
     const value = String(serialNumber || '').trim();
+    // Serials outside the MO- scheme are from the older numbering and carry no
+    // month to compare against, so the cutover lets them through (IT, Sep 2026).
+    if (!isMoSerial(value)) return null;
     const parsed = parseMoSerial(value);
     if (!parsed) {
-        return `Serial ${value} is not in the current format (MO-YYYYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYYYMM NNNNN), không thể nhập kho.`;
+        return `Serial ${value} is not in the current format (MO-YYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYMM NNNNN), không thể nhập kho.`;
     }
     if (!isSerialAfter(parsed, cutover.parsed)) {
         return `Legacy serial ${value}: only serials issued after ${cutover.raw} can be received. / Serial cũ ${value}: chỉ nhận serial phát hành sau ${cutover.raw}.`;

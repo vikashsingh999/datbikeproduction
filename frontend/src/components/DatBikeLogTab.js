@@ -2,16 +2,45 @@ import React, { useEffect, useRef, useState } from 'react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { API_URL, authHeaders } from '../firebase';
 
-// Serials are issued per production month as `MO-YYYYMM NNNNN`. Separators vary
-// between scanners and hand-typed entries (`MO-202609 45678`, `MO-202609-45678`,
-// `MO20260945678`), the two numbers do not.
+// Serials are issued per production month as `MO-<month> <sequence>`. The labels
+// on the line write the month with a two-digit year (`MO-2609 44290`), the
+// cutover values configured for the backend use four (`MO-202609 44200`), and
+// separators vary between scanners and hand-typed entries (`MO-202609-44200`,
+// `MO20260944200`). All of them have to read alike, so the month is normalised
+// to YYYYMM.
 function parseMoSerial(value) {
-  const match = /^MO[\s-]*(\d{6})[\s-]*(\d{1,12})$/.exec(String(value || '').trim().toUpperCase());
-  if (!match) return null;
-  const period = Number(match[1]); // YYYYMM
-  const month = period % 100;
+  const text = String(value || '').trim().toUpperCase();
+  // A separator between the month and the sequence settles the split outright.
+  const separated = /^MO[\s-]*(\d{4}|\d{6})[\s-]+(\d{1,12})$/.exec(text);
+  if (separated) return buildMoSerial(separated[1], separated[2]);
+  // Run together there is nothing to split on, so take whichever leading width
+  // gives a real month: MO260944290 is 2609 + 44290, MO20260944200 is 202609 +
+  // 44200, and the wrong reading of either lands outside the 2000-2099 range.
+  const joined = /^MO[\s-]*(\d{5,18})$/.exec(text);
+  if (!joined) return null;
+  const digits = joined[1];
+  return buildMoSerial(digits.slice(0, 6), digits.slice(6))
+    || buildMoSerial(digits.slice(0, 4), digits.slice(4));
+}
+
+// A month block (YYMM or YYYYMM) plus a sequence, or null when that is not a real
+// month. A two-digit year means 20YY, which is what the labels intend.
+function buildMoSerial(monthDigits, sequenceDigits) {
+  if (!/^(\d{4}|\d{6})$/.test(monthDigits)) return null;
+  if (!/^\d{1,12}$/.test(sequenceDigits)) return null;
+  const year = monthDigits.length === 6
+    ? Number(monthDigits.slice(0, 4))
+    : 2000 + Number(monthDigits.slice(0, 2));
+  const month = Number(monthDigits.slice(-2));
   if (month < 1 || month > 12) return null;
-  return { period, sequence: Number(match[2]) };
+  if (year < 2000 || year > 2099) return null;
+  return { period: year * 100 + month, sequence: Number(sequenceDigits) };
+}
+
+// Does this read as an MO- serial at all? Everything else belongs to the older
+// numbering, which carries no month to compare and is left alone.
+function isMoSerial(value) {
+  return /^MO[\s-]*\d/.test(String(value || '').trim().toUpperCase());
 }
 
 // Month first, then the sequence inside that month, both numeric — a string
@@ -238,10 +267,12 @@ function DatBikeLogTab() {
     // the old process, so scanning it again (rework coming back down the line)
     // would receive it twice and write a stale serial to the document header.
     const cutoverParsed = serialCutover ? parseMoSerial(serialCutover) : null;
-    if (cutoverParsed) {
+    // Serials outside the MO- scheme are from the older numbering and carry no
+    // month to compare against, so the cutover lets them through (IT, Sep 2026).
+    if (cutoverParsed && isMoSerial(value)) {
       const parsed = parseMoSerial(value);
       if (!parsed) {
-        setGrStatus({ loading: false, success: false, message: `Serial ${value} is not in the current format (MO-YYYYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYYYMM NNNNN), không thể nhập kho.` });
+        setGrStatus({ loading: false, success: false, message: `Serial ${value} is not in the current format (MO-YYMM NNNNN), so it cannot be received. / Serial ${value} không đúng định dạng hiện tại (MO-YYMM NNNNN), không thể nhập kho.` });
         return;
       }
       if (!isSerialAfter(parsed, cutoverParsed)) {
