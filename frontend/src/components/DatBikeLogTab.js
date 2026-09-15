@@ -515,18 +515,6 @@ function DatBikeLogTab() {
 
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>3. Goods Receipt by Serial Number<span style={sectionTitleViStyle}>Nhập kho theo số Serial</span></div>
-        {serialCutover && (
-          <div style={cutoverNoteStyle}>
-            Serials after <strong>{serialCutover}</strong> only — legacy serials are rejected.
-            <span style={{ opacity: 0.75 }}> / Chỉ serial sau {serialCutover} — serial cũ sẽ bị từ chối.</span>
-          </div>
-        )}
-        {effectiveFloor && !serialCutover && (
-          <div style={cutoverNoteStyle}>
-            Scans must be above <strong>{effectiveFloor.raw}</strong> — in any order, on any day.
-            <span style={{ opacity: 0.75 }}> / Chỉ nhận serial lớn hơn, không cần theo thứ tự.</span>
-          </div>
-        )}
         {totalConfirmedQty > 0 && (
           <div style={grComplete ? grProgressDoneStyle : grProgressStyle}>
             Received / Đã nhập kho: <strong>{receivedQuantity} / {totalConfirmedQty}</strong>
@@ -631,7 +619,6 @@ const grProgressStyle = { fontSize: '13px', color: '#6a6d70', backgroundColor: '
 const grProgressDoneStyle = { fontSize: '13px', color: '#385723', backgroundColor: '#e2f0d9', borderRadius: '4px', padding: '6px 10px', fontWeight: '600' };
 const chipPostedStyle = { backgroundColor: '#e2f0d9', borderColor: '#a9c48f', color: '#385723' };
 const chipDoneStyle = { marginLeft: '6px', fontWeight: '700', cursor: 'default' };
-const cutoverNoteStyle = { fontSize: '13px', color: '#8a5a00', backgroundColor: '#fff4e0', border: '1px solid #f0c987', borderRadius: '4px', padding: '6px 10px', marginBottom: '10px' };
 
 // --- Quantity warning modal (branded, replaces browser confirm) ---
 const modalOverlayStyle = {
