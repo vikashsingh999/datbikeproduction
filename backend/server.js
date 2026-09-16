@@ -174,10 +174,47 @@ function buildMoSerial(monthDigits, sequenceDigits) {
     return { period: year * 100 + month, sequence: Number(sequenceDigits) };
 }
 
+// The comparison form of a serial: upper case, separators dropped. Every spelling
+// a scanner can produce for one pack - MO-2609 44584, MO2609 44584, M-O2609 44584
+// - collapses to one key, so two spellings of the same serial cannot read as two
+// different packs.
+function serialKey(value) {
+    return String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+}
+
 // Does this read as an MO- serial at all? Everything else belongs to the older
-// numbering, which carries no month to compare and is left alone.
+// numbering, which carries no month to compare and is left alone. Separators go
+// first, so a scan that lands the hyphen in the wrong place (M-O2609 44584) is
+// still recognised as an MO serial and refused, rather than waved through as if
+// it came from the old scheme.
 function isMoSerial(value) {
-    return /^MO[\s-]*\d/.test(String(value || '').trim().toUpperCase());
+    return /^MO\d/.test(serialKey(value));
+}
+
+// How far a production month sits from this one, in months.
+function monthsFromNow(period) {
+    const now = new Date();
+    const serialMonths = Math.floor(period / 100) * 12 + (period % 100) - 1;
+    return serialMonths - (now.getFullYear() * 12 + now.getMonth());
+}
+
+// A month far from today is a mis-scan, not a serial. Labels only ever carry the
+// current production month or one near it, so a transposed year - MO-6209, which
+// reads as 2062 - is caught here instead of sorting above every cutover as a
+// far-future serial. The window reaches back well past the floor look-back so a
+// pack legitimately rejoining the line months later still scans.
+const SERIAL_PERIOD_MONTHS_BACK = 24;
+const SERIAL_PERIOD_MONTHS_AHEAD = 2;
+
+// Returns null when the serial's month is plausible, otherwise a bilingual message.
+function checkSerialPeriod(serialNumber) {
+    const value = String(serialNumber || '').trim();
+    if (!isMoSerial(value)) return null;
+    const parsed = parseMoSerial(value);
+    if (!parsed) return null; // unreadable MO serials are refused where the format is checked
+    const drift = monthsFromNow(parsed.period);
+    if (drift <= SERIAL_PERIOD_MONTHS_AHEAD && drift >= -SERIAL_PERIOD_MONTHS_BACK) return null;
+    return `Serial ${value} reads as production month ${parsed.period}, which is not close to today - it looks mis-scanned. Please scan again. / Serial ${value} co thang san xuat ${parsed.period} khong hop ly - co the quet sai. Vui long quet lai.`;
 }
 
 // Serial ordering: production month first, then the sequence within that month.
@@ -543,6 +580,13 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             return res.status(409).json({ error: cutoverError });
         }
 
+        // A month nowhere near today means the scan arrived garbled, whether or
+        // not a cutover is configured.
+        const periodError = checkSerialPeriod(serialNumber);
+        if (periodError) {
+            return res.status(409).json({ error: periodError });
+        }
+
         // Hard limit, enforced here rather than only in the UI: the number of
         // serials received for an order may never exceed its confirmed yield.
         // Browser state resets on refresh, SAP's does not — so both numbers are
@@ -664,7 +708,9 @@ async function fetchUsedSerials(material, months = DUP_CHECK_MONTHS) {
         + `&$format=json&$top=500`;
 
     const used = new Set();
-    const add = (v) => { if (v && String(v).trim()) used.add(String(v).trim().toUpperCase()); };
+    // Keyed on the separator-free form so one pack cannot be received twice under
+    // two spellings of the same serial.
+    const add = (v) => { if (v && String(v).trim()) used.add(serialKey(v)); };
     // Follow SAP's server-side paging (d.__next) with a safety cap on pages.
     for (let page = 0; page < 100 && url; page++) {
         let response;

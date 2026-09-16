@@ -37,10 +37,38 @@ function buildMoSerial(monthDigits, sequenceDigits) {
   return { period: year * 100 + month, sequence: Number(sequenceDigits) };
 }
 
+// The comparison form of a serial: upper case, separators dropped. Every spelling
+// a scanner can produce for one pack - MO-2609 44584, MO2609 44584, M-O2609 44584
+// - collapses to one key, so two spellings of the same serial cannot read as two
+// different packs.
+function serialKey(value) {
+  return String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+}
+
 // Does this read as an MO- serial at all? Everything else belongs to the older
-// numbering, which carries no month to compare and is left alone.
+// numbering, which carries no month to compare and is left alone. Separators go
+// first, so a scan that lands the hyphen in the wrong place (M-O2609 44584) is
+// still recognised as an MO serial and refused, rather than waved through as if
+// it came from the old scheme.
 function isMoSerial(value) {
-  return /^MO[\s-]*\d/.test(String(value || '').trim().toUpperCase());
+  return /^MO\d/.test(serialKey(value));
+}
+
+// How far a production month sits from this one, in months.
+function monthsFromNow(period) {
+  const now = new Date();
+  const serialMonths = Math.floor(period / 100) * 12 + (period % 100) - 1;
+  return serialMonths - (now.getFullYear() * 12 + now.getMonth());
+}
+
+// A month far from today is a mis-scan, not a serial - a transposed year (MO-6209
+// reads as 2062) would otherwise sort above every cutover as a far-future serial.
+const SERIAL_PERIOD_MONTHS_BACK = 24;
+const SERIAL_PERIOD_MONTHS_AHEAD = 2;
+
+function serialPeriodIsPlausible(parsed) {
+  const drift = monthsFromNow(parsed.period);
+  return drift <= SERIAL_PERIOD_MONTHS_AHEAD && drift >= -SERIAL_PERIOD_MONTHS_BACK;
 }
 
 // Month first, then the sequence inside that month, both numeric — a string
@@ -76,7 +104,8 @@ function DatBikeLogTab() {
 
   const [material, setMaterial] = useState('');
   const [storageLocation, setStorageLocation] = useState('0175W');
-  const [serialInput, setSerialInput] = useState('');
+  // The serial field is deliberately uncontrolled - see the input itself. Its text
+  // lives in the DOM node, reached through serialInputRef.
   const [serials, setSerials] = useState([]);
   const [receivedQuantity, setReceivedQuantity] = useState(0);
   // Serials already received in SAP for this order when it was loaded. This is
@@ -110,6 +139,15 @@ function DatBikeLogTab() {
   const orderInputRef = useRef(null);
   const operationInputRef = useRef(null);
   const serialInputRef = useRef(null);
+
+  // The serial field holds its own text rather than round-tripping every
+  // keystroke through React state. A keyboard-wedge scanner types faster than a
+  // controlled input can re-render, and a keystroke landing between the DOM
+  // write and the state commit arrives out of order - which is how MO-2609 44584
+  // reached the screen as M-O2609 44584 and MO-6209 44584.
+  const clearSerialInput = () => {
+    if (serialInputRef.current) serialInputRef.current.value = '';
+  };
   const videoRef = useRef(null);
   const codeReaderRef = useRef(null);
   const controlsRef = useRef(null);
@@ -203,7 +241,7 @@ function DatBikeLogTab() {
       });
       const data = await response.json();
       if (response.ok && Array.isArray(data.serials)) {
-        setUsedSerials(new Set(data.serials.map((s) => String(s).trim().toUpperCase())));
+        setUsedSerials(new Set(data.serials.map((s) => serialKey(s))));
       } else {
         setUsedSerials(new Set()); // fail open — SAP still rejects true duplicates on post
       }
@@ -246,16 +284,16 @@ function DatBikeLogTab() {
   };
 
   const addSerial = async () => {
-    const value = serialInput.trim();
+    const value = (serialInputRef.current?.value || '').trim();
     if (!value) {
-      setSerialInput('');
+      clearSerialInput();
       return;
     }
-    const normalized = value.toUpperCase();
+    const normalized = serialKey(value);
     // Duplicate guard: block (but keep the typed value) if this serial was already
     // received for this material in the last 2 months, or already entered in this
     // session. Operator can edit the value but cannot continue with a duplicate.
-    if (serials.some((s) => s.toUpperCase() === normalized)) {
+    if (serials.some((s) => serialKey(s) === normalized)) {
       setGrStatus({ loading: false, success: false, message: `Duplicate: serial ${value} was already entered in this session. / Trùng lặp: serial ${value} đã được nhập trong phiên này.` });
       return;
     }
@@ -280,6 +318,13 @@ function DatBikeLogTab() {
         return;
       }
     }
+    // A month nowhere near today means the scan arrived garbled - characters
+    // transposed on the way in - rather than naming a real pack.
+    const period = isMoSerial(value) ? parseMoSerial(value) : null;
+    if (period && !serialPeriodIsPlausible(period)) {
+      setGrStatus({ loading: false, success: false, message: `Serial ${value} reads as production month ${period.period}, which is not close to today — it looks mis-scanned. Please scan again. / Serial ${value} có tháng sản xuất ${period.period} không hợp lý — có thể quét sai. Vui lòng quét lại.` });
+      return;
+    }
     // Every serial must sit above the material's floor. Above it, scanning out of
     // sequence - days later, on another order - is normal work and stays allowed.
     const floor = effectiveFloor;
@@ -295,7 +340,7 @@ function DatBikeLogTab() {
     const confirmedYield = confirmations.reduce((sum, c) => sum + (parseFloat(c.confirmedQuantity) || 0), 0);
     if (!(confirmedYield > 0)) {
       setGrStatus({ loading: false, success: false, message: `Confirm the operation first — no confirmed quantity yet. / Hãy xác nhận công đoạn trước — chưa có SL đã xác nhận.` });
-      setSerialInput('');
+      clearSerialInput();
       return;
     }
     // Count the receipts SAP already holds for this order alongside this
@@ -303,11 +348,11 @@ function DatBikeLogTab() {
     const scannedTotal = receivedBeforeSession + serials.length;
     if (scannedTotal >= confirmedYield) {
       setGrStatus({ loading: false, success: false, message: `Cannot scan more than the confirmed quantity: ${scannedTotal}/${confirmedYield} serials. / Không thể quét vượt quá SL đã xác nhận: ${scannedTotal}/${confirmedYield} serial.` });
-      setSerialInput('');
+      clearSerialInput();
       return;
     }
     setSerials((prev) => [...prev, value]);
-    setSerialInput('');
+    clearSerialInput();
     serialInputRef.current?.focus();
     setGrStatus({ loading: true, success: null, message: `Posting GR for ${value}... / Đang nhập kho cho ${value}...` });
     try {
@@ -528,8 +573,7 @@ function DatBikeLogTab() {
             <input
               ref={serialInputRef}
               type="text"
-              value={serialInput}
-              onChange={(e) => setSerialInput(e.target.value)}
+              defaultValue=""
               onKeyDown={handleSerialKeyDown}
               style={inputStyle}
               placeholder="Scan or type serial number, press Enter to add / Quét hoặc nhập số serial, nhấn Enter để thêm"
