@@ -179,7 +179,15 @@ function buildMoSerial(monthDigits, sequenceDigits) {
 // - collapses to one key, so two spellings of the same serial cannot read as two
 // different packs.
 function serialKey(value) {
-    return String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+    const stripped = String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+    // An MO serial keys on what it means rather than how it was written, so the
+    // two-digit year on the label and the four-digit form used in configuration
+    // are one pack, not two.
+    // Falling back to the separator-free form means a scan whose hyphen landed
+    // in the wrong place (M-O2609 44584) still keys to the pack it names, so a
+    // garbled row already sitting in SAP still blocks the real serial.
+    const parsed = parseMoSerial(value) || parseMoSerial(stripped);
+    return parsed ? `MO${parsed.period}-${parsed.sequence}` : stripped;
 }
 
 // Does this read as an MO- serial at all? Everything else belongs to the older
@@ -621,6 +629,33 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
             }
         }
 
+        // A serial already received for this material cannot be received again, on
+        // this order or any other. Enforced here and not only in the screen: the
+        // screen loads its copy once per order and used to carry on with an empty
+        // set when that load failed, which is how one pack was received against
+        // 201646 and then again against 201647.
+        //
+        // Nothing else covers this. The floor rule is skipped while a cutover is
+        // configured, and a repeat scan sits above the cutover anyway. For a
+        // material that is not serial-managed in SAP the serial lives only in the
+        // document header text, so SAP itself will accept it twice.
+        let usedSerials;
+        try {
+            usedSerials = await getUsedSerials(material);
+        } catch (error) {
+            // Fail closed. An unchecked receipt is worse than a refused scan: it
+            // cannot be seen afterwards without reconciling against SAP by hand.
+            console.error('Duplicate-serial lookup failed:', error.message);
+            return res.status(503).json({
+                error: `Could not check serial ${serialNumber} against earlier receipts, so it was not received. Please scan again. / Không thể kiểm tra serial ${serialNumber} với các lần nhập trước, chưa nhập kho. Vui lòng quét lại.`,
+            });
+        }
+        if (usedSerials.has(serialKey(serialNumber))) {
+            return res.status(409).json({
+                error: `Duplicate serial number: ${serialNumber} has already been received for this material. / Số serial trùng lặp: ${serialNumber} đã tồn tại cho vật tư này.`,
+            });
+        }
+
         // Use confirmation service as CSRF token source (same as original n8n flow)
         const csrfBase = `${SAP_BASE_URL}/sap/opu/odata/sap/API_PROD_ORDER_CONFIRMATION_2_SRV/ProdnOrdConf2?$top=1&$format=json`;
         const { csrfToken, cookies } = await fetchCsrfToken(csrfBase);
@@ -663,6 +698,7 @@ app.post('/api/inventory/goods-receipt', async (req, res) => {
         });
 
         materialFloorCache.delete(String(material || '').trim()); // this receipt may raise the floor
+        rememberUsedSerial(material, serialNumber); // and it can never be received again
         return res.status(200).json({ success: true, sapResponse: sapResponse.data });
     } catch (error) {
         console.error('Error posting GR to SAP:', error.message);
@@ -732,6 +768,29 @@ async function fetchUsedSerials(material, months = DUP_CHECK_MONTHS) {
 }
 
 // Endpoint 4: Used serial values for a material (last N months) — duplicate guard.
+// One scan should not pay for a material-wide read every time. The window is
+// short, and a serial posted through this app is added to the cached set as soon
+// as it lands, so a duplicate scanned seconds later is still caught.
+const USED_SERIALS_CACHE_MS = 60000;
+const usedSerialsCache = new Map();
+
+async function getUsedSerials(material) {
+    const key = String(material || '').trim();
+    if (!key) return new Set();
+    const hit = usedSerialsCache.get(key);
+    if (hit && Date.now() - hit.at < USED_SERIALS_CACHE_MS) return hit.set;
+    const set = await fetchUsedSerials(key);
+    usedSerialsCache.set(key, { at: Date.now(), set });
+    return set;
+}
+
+// Keep a just-posted serial in the cached set rather than dropping the entry, so
+// the next scan is still answered from cache but can no longer miss this one.
+function rememberUsedSerial(material, serialNumber) {
+    const hit = usedSerialsCache.get(String(material || '').trim());
+    if (hit) hit.set.add(serialKey(serialNumber));
+}
+
 app.post('/api/inventory/used-serials', async (req, res) => {
     try {
         const { material, months } = req.body;

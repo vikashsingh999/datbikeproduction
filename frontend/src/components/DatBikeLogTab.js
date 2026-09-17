@@ -42,7 +42,15 @@ function buildMoSerial(monthDigits, sequenceDigits) {
 // - collapses to one key, so two spellings of the same serial cannot read as two
 // different packs.
 function serialKey(value) {
-  return String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  const stripped = String(value || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  // An MO serial keys on what it means rather than how it was written, so the
+  // two-digit year on the label and the four-digit form used in configuration
+  // are one pack, not two.
+  // Falling back to the separator-free form means a scan whose hyphen landed
+  // in the wrong place (M-O2609 44584) still keys to the pack it names, so a
+  // garbled row already sitting in SAP still blocks the real serial.
+  const parsed = parseMoSerial(value) || parseMoSerial(stripped);
+  return parsed ? `MO${parsed.period}-${parsed.sequence}` : stripped;
 }
 
 // Does this read as an MO- serial at all? Everything else belongs to the older
@@ -243,7 +251,11 @@ function DatBikeLogTab() {
       if (response.ok && Array.isArray(data.serials)) {
         setUsedSerials(new Set(data.serials.map((s) => serialKey(s))));
       } else {
-        setUsedSerials(new Set()); // fail open — SAP still rejects true duplicates on post
+        // Carry on with an empty set: the screen's copy is a convenience that
+        // names the duplicate before a round trip. The goods-receipt endpoint
+        // checks the same thing and refuses to post, so a failed load here
+        // costs a slower message, not an unchecked receipt.
+        setUsedSerials(new Set());
       }
     } catch {
       setUsedSerials(new Set());
